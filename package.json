@@ -1,6 +1,7 @@
 {
-  "name": "my-project",
-  "version": "0.1.0",
+  "name": "stock-strategy-master",
+  "version": "1.0.0",
+  "description": "策略大师 - 个人股票投资助手。帮助散户投资者建立规则化交易体系，实现纪律化操作。",
   "private": true,
   "scripts": {
     "dev": "next dev",
