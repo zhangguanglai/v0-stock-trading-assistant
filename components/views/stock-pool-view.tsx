@@ -15,6 +15,9 @@ import {
   RefreshCw,
   Check,
   X,
+  ChevronDown,
+  Zap,
+  Settings2,
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -52,22 +55,35 @@ import { formatPercent, getProfitColorClass } from '@/lib/mock-data';
 import { toast } from 'sonner';
 
 export function StockPoolView() {
-  const { watchlist, removeFromWatchlist, addToWatchlist, strategies, activeStrategyId } =
+  const { watchlist, removeFromWatchlist, addToWatchlist, strategies, activeStrategyId, setActiveStrategy } =
     useStockStore();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState<'all' | 'system' | 'manual'>('all');
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
+  const [selectedStrategyId, setSelectedStrategyId] = useState<string | null>(null);
   const [newStock, setNewStock] = useState({
     stockCode: '',
     stockName: '',
     sector: '',
   });
 
-  const activeStrategy = useMemo(
-    () => strategies.find((s) => s.id === activeStrategyId),
-    [strategies, activeStrategyId]
+  // 获取所有激活的策略
+  const activeStrategies = useMemo(
+    () => strategies.filter((s) => s.status === 'active'),
+    [strategies]
   );
+
+  // 当前选中用于筛选的策略（默认为全局激活策略，或第一个激活策略）
+  const currentFilterStrategyId = selectedStrategyId || activeStrategyId || activeStrategies[0]?.id;
+  
+  const currentFilterStrategy = useMemo(
+    () => strategies.find((s) => s.id === currentFilterStrategyId),
+    [strategies, currentFilterStrategyId]
+  );
+
+  // 兼容旧的 activeStrategy 变量名
+  const activeStrategy = currentFilterStrategy;
 
   const filteredStocks = useMemo(() => {
     return watchlist.filter((stock) => {
@@ -194,6 +210,70 @@ export function StockPoolView() {
       </header>
 
       <div className="flex-1 space-y-6 p-6">
+        {/* 策略切换器 - 当有多个激活策略时显示 */}
+        {activeStrategies.length > 1 && (
+          <Card className="border-primary/20 bg-primary/5">
+            <CardContent className="py-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <Zap className="h-5 w-5 text-primary" />
+                  <div>
+                    <p className="text-sm font-medium">当前有 {activeStrategies.length} 个激活策略</p>
+                    <p className="text-xs text-muted-foreground">选择策略查看对应的筛选规则和股票池</p>
+                  </div>
+                </div>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="outline" className="min-w-[200px] justify-between">
+                      <span className="flex items-center gap-2">
+                        <Settings2 className="h-4 w-4" />
+                        {currentFilterStrategy?.name || '选择策略'}
+                      </span>
+                      <ChevronDown className="h-4 w-4 opacity-50" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-[250px]">
+                    <DropdownMenuLabel>切换筛选策略</DropdownMenuLabel>
+                    <DropdownMenuSeparator />
+                    {activeStrategies.map((strategy) => (
+                      <DropdownMenuItem
+                        key={strategy.id}
+                        onClick={() => setSelectedStrategyId(strategy.id)}
+                        className="flex items-center justify-between"
+                      >
+                        <span className="flex items-center gap-2">
+                          <Badge variant="outline" className="text-xs">
+                            {strategy.cycle === 'short' ? '短线' : strategy.cycle === 'swing' ? '波段' : '长线'}
+                          </Badge>
+                          {strategy.name}
+                        </span>
+                        {currentFilterStrategyId === strategy.id && (
+                          <Check className="h-4 w-4 text-primary" />
+                        )}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* 无激活策略提示 */}
+        {activeStrategies.length === 0 && (
+          <Card className="border-yellow-500/20 bg-yellow-500/5">
+            <CardContent className="flex items-center gap-4 py-4">
+              <Settings2 className="h-8 w-8 text-yellow-500" />
+              <div>
+                <p className="font-medium text-yellow-600 dark:text-yellow-400">暂无激活策略</p>
+                <p className="text-sm text-muted-foreground">
+                  请先在"策略配置中心"创建并激活至少一个策略，才能使用智能筛选功能
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Stats Cards */}
         <div className="grid gap-4 md:grid-cols-4">
           <Card>
