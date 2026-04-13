@@ -6,13 +6,14 @@ import {
   Plus,
   Check,
   Trash2,
-  ChevronDown,
-  ChevronUp,
-  Zap,
-  Target,
-  Shield,
-  Wallet,
   BarChart3,
+  Zap,
+  TrendingUp,
+  TrendingDown,
+  Target,
+  Wallet,
+  Shield,
+  Power,
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -353,11 +354,31 @@ export function StrategyView() {
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <Badge
-                      variant={activeStrategy.status === 'active' ? 'default' : 'secondary'}
-                    >
-                      {activeStrategy.status === 'active' ? '已激活' : '未激活'}
-                    </Badge>
+                    {activeStrategy.status === 'active' ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          updateStrategy(activeStrategy.id, { status: 'inactive' });
+                          toast.success('策略已停用');
+                        }}
+                      >
+                        <Power className="mr-1 h-3 w-3" />
+                        已激活
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="default"
+                        size="sm"
+                        onClick={() => {
+                          updateStrategy(activeStrategy.id, { status: 'active' });
+                          toast.success('策略已激活');
+                        }}
+                      >
+                        <Power className="mr-1 h-3 w-3" />
+                        激活策略
+                      </Button>
+                    )}
                     <AlertDialog>
                       <AlertDialogTrigger asChild>
                         <Button variant="ghost" size="icon">
@@ -758,7 +779,7 @@ export function StrategyView() {
                         }
                       />
                       <p className="text-xs text-muted-foreground">
-                        持仓亏损达到此比例时，强制止损卖出
+                        持仓亏损��到此比例时，强制止损卖出
                       </p>
                     </div>
                   </CardContent>
