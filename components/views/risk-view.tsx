@@ -119,11 +119,13 @@ export function RiskView() {
   ]
 
   // 波动率数据
-  const volatilityData = portfolio.positions.map((p, idx) => ({
-    name: p.code,
-    volatility: 15 + Math.random() * 25,
-    sharpeRatio: 0.5 + Math.random() * 1.5,
-  })).slice(0, 6)
+  const volatilityData = useMemo(() => {
+    return positions.map((p) => ({
+      name: p.stockCode || 'N/A',
+      volatility: 15 + Math.random() * 25,
+      sharpeRatio: 0.5 + Math.random() * 1.5,
+    })).slice(0, 6)
+  }, [positions])
 
   return (
     <div className="space-y-6">
