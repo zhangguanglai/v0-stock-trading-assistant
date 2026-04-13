@@ -25,13 +25,6 @@ export default function Home() {
   const [user, setUser] = useState<{ id: string; email?: string } | null>(null);
   const router = useRouter();
   
-  const { 
-    addPosition, 
-    addToWatchlist, 
-    addTradeRecord, 
-    addAlert,
-  } = useStockStore();
-
   // 检查用户登录状态（可选，不阻止访问）
   useEffect(() => {
     const checkUser = async () => {
@@ -43,7 +36,7 @@ export default function Home() {
           setUser({ id: user.id, email: user.email });
         }
       } catch (error) {
-        console.log('[v0] Auth check failed, continuing without user:', error);
+        // 认证检查失败时继续运行
       } finally {
         setLoading(false);
       }
@@ -66,37 +59,37 @@ export default function Home() {
     };
   }, []);
 
-  // 初始化默认数据
+  // 初始化默认数据（只执行一次）
   useEffect(() => {
     if (!initialized && !loading) {
       initializeDefaultStrategy();
       
-      // 只在没有数据时添加模拟数据
+      // 直接从 store 获取方法，避免依赖项问题
       const store = useStockStore.getState();
       
       if (store.positions.length === 0) {
         mockPositions.forEach((p) => {
-          addPosition({ ...p, strategyId: store.activeStrategyId || '' });
+          store.addPosition({ ...p, strategyId: store.activeStrategyId || '' });
         });
       }
       
       if (store.watchlist.length === 0) {
-        mockWatchlist.forEach((s) => addToWatchlist(s));
+        mockWatchlist.forEach((s) => store.addToWatchlist(s));
       }
       
       if (store.tradeRecords.length === 0) {
         mockTradeRecords.forEach((r) => {
-          addTradeRecord({ ...r, strategyId: store.activeStrategyId || '' });
+          store.addTradeRecord({ ...r, strategyId: store.activeStrategyId || '' });
         });
       }
       
       if (store.alerts.length === 0) {
-        mockAlerts.forEach((a) => addAlert(a));
+        mockAlerts.forEach((a) => store.addAlert(a));
       }
       
       setInitialized(true);
     }
-  }, [initialized, loading, addPosition, addToWatchlist, addTradeRecord, addAlert]);
+  }, [initialized, loading]);
 
   const renderView = () => {
     switch (currentView) {
