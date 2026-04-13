@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import {
   TrendingUp,
   TrendingDown,
@@ -17,6 +17,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { SidebarTrigger } from '@/components/ui/sidebar';
+import { Skeleton } from '@/components/ui/skeleton';
 import {
   ChartContainer,
   ChartTooltip,
@@ -42,10 +43,16 @@ interface DashboardViewProps {
 }
 
 export function DashboardView({ onNavigate }: DashboardViewProps) {
+  const [mounted, setMounted] = useState(false);
   const positions = useStockStore((state) => state.positions);
   const alerts = useStockStore((state) => state.alerts);
   const strategies = useStockStore((state) => state.strategies);
   const activeStrategyId = useStockStore((state) => state.activeStrategyId);
+  
+  // 确保只在客户端渲染动态数据
+  useEffect(() => {
+    setMounted(true);
+  }, []);
   
   // 使用 useMemo 计算 dashboard 数据，避免无限循环
   const dashboardData = useMemo(() => {
@@ -88,6 +95,39 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
       value,
     }));
   }, [positions, dashboardData.cashAmount]);
+
+  // 在客户端挂载前显示骨架屏，避免 hydration mismatch
+  if (!mounted) {
+    return (
+      <div className="flex flex-col">
+        <header className="sticky top-0 z-10 flex h-16 items-center gap-4 border-b bg-background/95 px-6 backdrop-blur">
+          <SidebarTrigger />
+          <div className="flex flex-1 items-center justify-between">
+            <div>
+              <h1 className="text-xl font-semibold">投资总览</h1>
+              <Skeleton className="mt-1 h-4 w-32" />
+            </div>
+            <Skeleton className="h-6 w-28" />
+          </div>
+        </header>
+        <div className="flex-1 space-y-6 p-6">
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+            {[1, 2, 3, 4].map((i) => (
+              <Card key={i}>
+                <CardHeader className="pb-2">
+                  <Skeleton className="h-4 w-20" />
+                </CardHeader>
+                <CardContent>
+                  <Skeleton className="h-8 w-32" />
+                  <Skeleton className="mt-2 h-3 w-24" />
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col">
