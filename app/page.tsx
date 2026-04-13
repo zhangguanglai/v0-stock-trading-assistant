@@ -32,19 +32,21 @@ export default function Home() {
     addAlert,
   } = useStockStore();
 
-  // 检查用户登录状态
+  // 检查用户登录状态（可选，不阻止访问）
   useEffect(() => {
     const checkUser = async () => {
-      const supabase = createClient();
-      const { data: { user } } = await supabase.auth.getUser();
-      
-      if (!user) {
-        router.push('/auth/login');
-        return;
+      try {
+        const supabase = createClient();
+        const { data: { user } } = await supabase.auth.getUser();
+        
+        if (user) {
+          setUser({ id: user.id, email: user.email });
+        }
+      } catch (error) {
+        console.log('[v0] Auth check failed, continuing without user:', error);
+      } finally {
+        setLoading(false);
       }
-      
-      setUser({ id: user.id, email: user.email });
-      setLoading(false);
     };
 
     checkUser();
@@ -53,7 +55,7 @@ export default function Home() {
     const supabase = createClient();
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (event === 'SIGNED_OUT') {
-        router.push('/auth/login');
+        setUser(null);
       } else if (session?.user) {
         setUser({ id: session.user.id, email: session.user.email });
       }
@@ -62,11 +64,11 @@ export default function Home() {
     return () => {
       subscription.unsubscribe();
     };
-  }, [router]);
+  }, []);
 
   // 初始化默认数据
   useEffect(() => {
-    if (!initialized && user) {
+    if (!initialized && !loading) {
       initializeDefaultStrategy();
       
       // 只在没有数据时添加模拟数据
@@ -94,7 +96,7 @@ export default function Home() {
       
       setInitialized(true);
     }
-  }, [initialized, user, addPosition, addToWatchlist, addTradeRecord, addAlert]);
+  }, [initialized, loading, addPosition, addToWatchlist, addTradeRecord, addAlert]);
 
   const renderView = () => {
     switch (currentView) {
