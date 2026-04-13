@@ -27,6 +27,8 @@ export interface StrategyTemplate {
     maxPeRatio?: number;              // PE上限
     minPbRatio?: number;              // PB下限
     maxPbRatio?: number;              // PB上限
+    minRoe?: number;                  // 最小ROE(%)
+    maxDebtRatio?: number;            // 最大资产负债率(%)
     sectors?: string[];               // 偏好行业
     excludeSectors?: string[];        // 排除行业
     technicalConditions: string[];    // 技术条件描述
@@ -77,6 +79,8 @@ export const swingTradingTemplate: StrategyTemplate = {
     maxMarketCap: 2000,               // 最大2000亿市值
     minPeRatio: 10,
     maxPeRatio: 50,
+    minRoe: 10,                       // ROE > 10%
+    maxDebtRatio: 60,                 // 资产负债率 < 60%
     technicalConditions: [
       '股价在20日均线上方',
       '20日均线向上',
@@ -154,6 +158,8 @@ export const valueInvestingTemplate: StrategyTemplate = {
     maxPeRatio: 25,
     minPbRatio: 0.5,
     maxPbRatio: 3,
+    minRoe: 15,                       // ROE > 15%
+    maxDebtRatio: 50,                 // 资产负债率 < 50%
     sectors: ['消费', '医药', '金融', '公用事业'],
     technicalConditions: [
       '股价处于历史估值低位',
@@ -220,6 +226,9 @@ export const trendFollowingTemplate: StrategyTemplate = {
   
   selectionRules: {
     minMarketCap: 30,
+    maxMarketCap: 1000,
+    minRoe: 8,                        // ROE > 8%
+    maxDebtRatio: 70,                 // 资产负债率 < 70%
     technicalConditions: [
       '处于明显上升趋势',
       '突破60日均线',
@@ -285,6 +294,8 @@ export const growthInvestingTemplate: StrategyTemplate = {
     maxMarketCap: 1000,
     minPeRatio: 20,
     maxPeRatio: 80,
+    minRoe: 12,                       // ROE > 12%
+    maxDebtRatio: 55,                 // 资产负债率 < 55%
     sectors: ['科技', '医药', '新能源', '消费升级'],
     technicalConditions: [
       '营收增速>30%',

@@ -97,48 +97,52 @@ export function StrategyView() {
   };
 
   const handleCreateFromTemplate = (template: StrategyTemplate) => {
-    const templateConfig = createStrategyFromTemplate(template);
-    const newStrategy: TradingStrategy = {
-      id: crypto.randomUUID(),
-      name: templateConfig.name,
-      status: 'active',
-      cycle: template.category === 'swing' ? 'swing' : template.category === 'trend' ? 'short' : 'long',
-      selectionRules: {
-        minMarketCap: template.selectionRules.minMarketCap || 50,
-        maxPE: template.selectionRules.maxPeRatio || 50,
-        minPE: template.selectionRules.minPeRatio || 0,
-        sectors: template.selectionRules.sectors || [],
-        excludeST: true,
-        excludeNewStock: true,
+    // 使用与TradingStrategy类型一致的数据结构（不包含id和createdAt，由store生成）
+    const strategyData = {
+      name: template.name,
+      status: 'active' as const,
+      cycle: (template.category === 'swing' ? 'swing' : template.category === 'trend' ? 'short' : 'long') as TradingCycle,
+      // 选股规则 - 使用stockRules结构
+      stockRules: {
+        priceAboveMA5: true,
+        priceAboveMA20: true,
+        weeklyMACDGoldenCross: template.category === 'swing',
+        volumeRatio: 1.5,
+        minROE: template.selectionRules.minRoe || 10,
+        maxDebtRatio: template.selectionRules.maxDebtRatio || 50,
+        maxPEPercentile: 30,
+        minTurnoverRate5D: 3,
+        maxMarketCap: template.selectionRules.maxMarketCap || 500,
+        minSectorGain: 2,
       },
+      // 买入规则
       buyRules: {
-        signals: ['ma5CrossMa20', 'macdGoldenCross'],
-        minSignalCount: 2,
-        volumeCondition: true,
-        trendCondition: true,
+        signals: ['ma5CrossMa20', 'macdGoldenCross'] as BuySignal[],
+        batchBuyRatios: [0.3, 0.3, 0.4],
+        addPositionOnDip: 5,
+        addPositionOnMA60: true,
       },
+      // 卖出规则
       sellRules: {
         stopLossPercent: template.exitRules.stopLossPercent,
         takeProfitPercent: template.exitRules.takeProfitPercent,
-        trailingStopEnabled: !!template.exitRules.trailingStopPercent,
         trailingStopPercent: template.exitRules.trailingStopPercent || 8,
-        timeStopEnabled: !!template.exitRules.timeStopDays,
-        timeStopDays: template.exitRules.timeStopDays || 15,
-        timeStopMinProfit: template.exitRules.timeStopMinProfit || 5,
+        timeStopDays: template.exitRules.timeStopDays || 20,
+        timeStopMinGain: template.exitRules.timeStopMinProfit || 3,
+        partialTakeProfitPercent: Math.floor(template.exitRules.takeProfitPercent * 0.6),
       },
-      capitalRules: {
-        maxPositionRatio: template.capitalRules.maxSinglePositionRatio,
-        maxTotalPositionRatio: template.capitalRules.maxTotalPositionRatio,
-        maxSingleLossRatio: template.capitalRules.maxSingleLossRatio,
-        maxDailyLossRatio: template.capitalRules.maxDailyLossRatio,
-        maxSectorRatio: template.capitalRules.maxSectorRatio,
+      // 资金管理规则
+      moneyRules: {
+        totalCapital: 200000,
+        maxSingleStockPercent: Math.round(template.capitalRules.maxSinglePositionRatio * 100),
+        maxSectorPercent: Math.round(template.capitalRules.maxSectorRatio * 100),
+        minCashPercent: 10,
+        maxPositions: 5,
       },
-      createdAt: new Date(),
-      updatedAt: new Date(),
     };
     
-    addStrategy(newStrategy);
-    setActiveStrategy(newStrategy.id);
+    addStrategy(strategyData);
+    // 获取新创建的策略ID（store会自动设置为activeStrategyId）
     setShowTemplates(false);
     setSelectedTemplate(null);
     toast.success(`已从模板创建策略：${template.name}`);
@@ -407,6 +411,18 @@ export function StrategyView() {
 
               {/* 选股规则 */}
               <TabsContent value="stock" className="space-y-4">
+                {!activeStrategy.stockRules ? (
+                  <Card>
+                    <CardContent className="flex flex-col items-center justify-center py-12">
+                      <BarChart3 className="h-12 w-12 text-muted-foreground/50" />
+                      <h3 className="mt-4 font-medium">选股规则未配置</h3>
+                      <p className="mt-2 text-sm text-muted-foreground text-center">
+                        此策略可能是从模板导入的旧版本，请重新创建策略或手动配置选股规则
+                      </p>
+                    </CardContent>
+                  </Card>
+                ) : (
+                <>
                 <Card>
                   <CardHeader>
                     <CardTitle className="text-base">技术面条件</CardTitle>
@@ -592,10 +608,24 @@ export function StrategyView() {
                     </div>
                   </CardContent>
                 </Card>
+                </>
+                )}
               </TabsContent>
 
               {/* 买入规则 */}
               <TabsContent value="buy" className="space-y-4">
+                {!activeStrategy.buyRules ? (
+                  <Card>
+                    <CardContent className="flex flex-col items-center justify-center py-12">
+                      <Zap className="h-12 w-12 text-muted-foreground/50" />
+                      <h3 className="mt-4 font-medium">买入规则未配置</h3>
+                      <p className="mt-2 text-sm text-muted-foreground text-center">
+                        请重新创建策略或手动配置买入规则
+                      </p>
+                    </CardContent>
+                  </Card>
+                ) : (
+                <>
                 <Card>
                   <CardHeader>
                     <CardTitle className="text-base">买入信号</CardTitle>
@@ -687,10 +717,24 @@ export function StrategyView() {
                     </div>
                   </CardContent>
                 </Card>
+                </>
+                )}
               </TabsContent>
 
               {/* 卖出规则 */}
               <TabsContent value="sell" className="space-y-4">
+                {!activeStrategy.sellRules ? (
+                  <Card>
+                    <CardContent className="flex flex-col items-center justify-center py-12">
+                      <Target className="h-12 w-12 text-muted-foreground/50" />
+                      <h3 className="mt-4 font-medium">卖出规则未配置</h3>
+                      <p className="mt-2 text-sm text-muted-foreground text-center">
+                        请重新创建策略或手动配置卖出规则
+                      </p>
+                    </CardContent>
+                  </Card>
+                ) : (
+                <>
                 <Card>
                   <CardHeader>
                     <CardTitle className="text-base">止损设置</CardTitle>
@@ -839,10 +883,24 @@ export function StrategyView() {
                     </div>
                   </CardContent>
                 </Card>
+                </>
+                )}
               </TabsContent>
 
               {/* 资金管理 */}
               <TabsContent value="money" className="space-y-4">
+                {!activeStrategy.moneyRules ? (
+                  <Card>
+                    <CardContent className="flex flex-col items-center justify-center py-12">
+                      <Wallet className="h-12 w-12 text-muted-foreground/50" />
+                      <h3 className="mt-4 font-medium">资金管理规则未配置</h3>
+                      <p className="mt-2 text-sm text-muted-foreground text-center">
+                        请重新创建策略或手动配置资金管理规则
+                      </p>
+                    </CardContent>
+                  </Card>
+                ) : (
+                <>
                 <Card>
                   <CardHeader>
                     <CardTitle className="text-base">账户设置</CardTitle>
@@ -963,6 +1021,8 @@ export function StrategyView() {
                     </div>
                   </CardContent>
                 </Card>
+                </>
+                )}
               </TabsContent>
             </Tabs>
           </div>

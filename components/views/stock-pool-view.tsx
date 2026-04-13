@@ -241,7 +241,7 @@ export function StockPoolView() {
         </div>
 
         {/* Current Strategy Rules */}
-        {activeStrategy && (
+        {activeStrategy && activeStrategy.stockRules && (
           <Card>
             <CardHeader>
               <CardTitle className="text-base">当前筛选规则</CardTitle>
@@ -261,22 +261,22 @@ export function StockPoolView() {
                   <Badge variant="secondary">周MACD金叉</Badge>
                 )}
                 <Badge variant="secondary">
-                  量比 &gt; {activeStrategy.stockRules.volumeRatio}
+                  量比 &gt; {activeStrategy.stockRules.volumeRatio || 1.5}
                 </Badge>
                 <Badge variant="secondary">
-                  ROE &gt; {activeStrategy.stockRules.minROE}%
+                  ROE &gt; {activeStrategy.stockRules.minROE || 10}%
                 </Badge>
                 <Badge variant="secondary">
-                  负债率 &lt; {activeStrategy.stockRules.maxDebtRatio}%
+                  负债率 &lt; {activeStrategy.stockRules.maxDebtRatio || 50}%
                 </Badge>
                 <Badge variant="secondary">
-                  PE分位 &lt; {activeStrategy.stockRules.maxPEPercentile}%
+                  PE分位 &lt; {activeStrategy.stockRules.maxPEPercentile || 30}%
                 </Badge>
                 <Badge variant="secondary">
-                  换手率 &gt; {activeStrategy.stockRules.minTurnoverRate5D}%
+                  换手率 &gt; {activeStrategy.stockRules.minTurnoverRate5D || 3}%
                 </Badge>
                 <Badge variant="secondary">
-                  市值 &lt; {activeStrategy.stockRules.maxMarketCap}亿
+                  市值 &lt; {activeStrategy.stockRules.maxMarketCap || 100}亿
                 </Badge>
               </div>
             </CardContent>
