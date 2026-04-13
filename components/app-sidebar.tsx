@@ -1,5 +1,6 @@
 'use client';
 
+import { useRouter } from 'next/navigation';
 import {
   LayoutDashboard,
   Settings2,
@@ -11,7 +12,11 @@ import {
   Bell,
   Moon,
   Sun,
+  Shield,
+  LogOut,
+  User,
 } from 'lucide-react';
+import { createClient } from '@/lib/supabase/client';
 import {
   Sidebar,
   SidebarContent,
@@ -62,17 +67,30 @@ const menuItems = [
     label: '交易日志',
     icon: FileText,
   },
+  {
+    id: 'risk' as ViewType,
+    label: '风险透视仪',
+    icon: Shield,
+  },
 ];
 
 interface AppSidebarProps {
   currentView: ViewType;
   onViewChange: (view: ViewType) => void;
+  user?: { id: string; email?: string } | null;
 }
 
-export function AppSidebar({ currentView, onViewChange }: AppSidebarProps) {
+export function AppSidebar({ currentView, onViewChange, user }: AppSidebarProps) {
   const { theme, setTheme } = useTheme();
   const alerts = useStockStore((state) => state.alerts);
   const unreadAlerts = alerts.filter((a) => !a.read).length;
+  const router = useRouter();
+
+  const handleLogout = async () => {
+    const supabase = createClient();
+    await supabase.auth.signOut();
+    router.push('/auth/login');
+  };
 
   return (
     <Sidebar>
@@ -111,6 +129,12 @@ export function AppSidebar({ currentView, onViewChange }: AppSidebarProps) {
       </SidebarContent>
 
       <SidebarFooter className="border-t border-sidebar-border">
+        {user && (
+          <div className="flex items-center gap-2 px-2 py-2 text-sm text-sidebar-foreground/70">
+            <User className="h-4 w-4" />
+            <span className="truncate flex-1">{user.email || '用户'}</span>
+          </div>
+        )}
         <div className="flex items-center justify-between px-2 py-2">
           <Button
             variant="ghost"
@@ -136,6 +160,16 @@ export function AppSidebar({ currentView, onViewChange }: AppSidebarProps) {
             <Sun className="h-5 w-5 rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
             <Moon className="absolute h-5 w-5 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
             <span className="sr-only">切换主题</span>
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={handleLogout}
+            className="text-sidebar-foreground hover:bg-sidebar-accent"
+            title="退出登录"
+          >
+            <LogOut className="h-5 w-5" />
+            <span className="sr-only">退出登录</span>
           </Button>
         </div>
       </SidebarFooter>

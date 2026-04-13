@@ -4,6 +4,98 @@ export type TradingCycle = 'short' | 'swing' | 'long';
 // 策略状态
 export type StrategyStatus = 'active' | 'inactive';
 
+// 用户配置
+export interface UserProfile {
+  id: string;
+  displayName?: string;
+  totalCapital: number;
+  maxSinglePositionRatio: number;
+  maxTotalPositionRatio: number;
+  maxSingleLossRatio: number;
+  maxDailyLossRatio: number;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+// 数据库策略模型
+export interface Strategy {
+  id: string;
+  name: string;
+  description?: string;
+  strategyType: string;
+  isActive: boolean;
+  params: Record<string, unknown>;
+  entryRules: unknown[];
+  exitRules: unknown[];
+  positionSizing: Record<string, unknown>;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+// 股票池
+export interface StockPool {
+  id: string;
+  name: string;
+  description?: string;
+  filterCriteria: Record<string, unknown>;
+  isActive: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+// 股票池项目
+export interface StockPoolItem {
+  id: string;
+  poolId: string;
+  stockCode: string;
+  stockName: string;
+  sector?: string;
+  marketCap?: number;
+  peRatio?: number;
+  currentPrice?: number;
+  signalStatus: string;
+  notes?: string;
+  addedAt?: string;
+  updatedAt?: string;
+}
+
+// 交易记录(数据库)
+export interface Trade {
+  id: string;
+  positionId?: string;
+  strategyId?: string;
+  stockCode: string;
+  stockName: string;
+  tradeType: string;
+  price: number;
+  quantity: number;
+  totalAmount: number;
+  commission: number;
+  tradeDate: string;
+  reason?: string;
+  emotionState?: string;
+  followedRules: boolean;
+  ruleViolations?: string[];
+  createdAt?: string;
+}
+
+// 交易复盘
+export interface TradeReview {
+  id: string;
+  tradeId?: string;
+  positionId?: string;
+  reviewDate: string;
+  reviewType: string;
+  whatWentWell?: string;
+  whatWentWrong?: string;
+  lessonsLearned?: string;
+  actionItems?: string[];
+  emotionalReflection?: string;
+  rating?: number;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 // 交易策略
 export interface TradingStrategy {
   id: string;
@@ -80,8 +172,31 @@ export interface MoneyManagementRules {
   maxPositions: number;
 }
 
-// 持仓股票
+// 持仓股票(数据库)
 export interface Position {
+  id: string;
+  strategyId?: string;
+  stockCode: string;
+  stockName: string;
+  entryPrice: number;
+  currentPrice?: number;
+  quantity: number;
+  stopLossPrice?: number;
+  takeProfitPrice?: number;
+  trailingStopPercent?: number;
+  status: string;
+  entryDate?: string;
+  exitDate?: string;
+  exitPrice?: number;
+  pnl?: number;
+  pnlPercent?: number;
+  notes?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+// 旧版持仓接口（向后兼容）
+export interface LegacyPosition {
   id: string;
   strategyId: string;
   stockCode: string;
@@ -169,8 +284,24 @@ export interface DashboardData {
   performanceStats: PerformanceStats;
 }
 
-// 警报
+// 警报(数据库)
 export interface Alert {
+  id: string;
+  positionId?: string;
+  stockCode: string;
+  stockName: string;
+  alertType: string;
+  triggerPrice?: number;
+  currentPrice?: number;
+  message: string;
+  isRead: boolean;
+  isTriggered: boolean;
+  triggeredAt?: string;
+  createdAt?: string;
+}
+
+// 旧版警报接口（向后兼容）
+export interface LegacyAlert {
   id: string;
   type: 'stopLoss' | 'takeProfit' | 'timeStop' | 'riskWarning' | 'signal';
   severity: 'high' | 'medium' | 'low';
