@@ -57,8 +57,14 @@ import { useStockStore } from '@/lib/store';
 import { formatCurrency, formatPercent, getProfitColorClass, mockNetValueData } from '@/lib/mock-data';
 
 export function TradeLogView() {
-  const { tradeRecords, strategies, activeStrategyId } = useStockStore();
-  const performanceStats = useStockStore((state) => state.getPerformanceStats());
+  const tradeRecords = useStockStore((state) => state.tradeRecords);
+  const strategies = useStockStore((state) => state.strategies);
+  const activeStrategyId = useStockStore((state) => state.activeStrategyId);
+  
+  // 使用 useMemo 计算性能统计，避免无限循环
+  const performanceStats = useMemo(() => {
+    return useStockStore.getState().getPerformanceStats();
+  }, [tradeRecords]);
 
   const [filterType, setFilterType] = useState<'all' | 'buy' | 'sell'>('all');
   const [timeRange, setTimeRange] = useState<'all' | '1m' | '3m' | '6m' | '1y'>('all');

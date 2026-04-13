@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import {
   BarChart,
   Bar,
@@ -31,30 +31,58 @@ import { useStockStore } from '@/lib/store'
 
 export function RiskView() {
   const positions = useStockStore((state) => state.positions)
-  const portfolio = useStockStore((state) => state.portfolio)
   const [selectedMetric, setSelectedMetric] = useState<string>('all')
 
+  // 默认资金配置
+  const totalCapital = 100000
+
   // 计算风险指标
-  const riskMetrics = {
-    totalCapital: portfolio.totalCapital,
-    usedCapital: portfolio.positions.reduce((sum, p) => sum + p.cost, 0),
-    availableCapital: portfolio.totalCapital - portfolio.positions.reduce((sum, p) => sum + p.cost, 0),
-    maxSinglePositionRisk: Math.max(...portfolio.positions.map(p => p.stopLossPercent || 5), 5),
-    portfolioDrawdown: Math.abs(
-      portfolio.positions.reduce((sum, p) => {
-        const loss = p.currentPrice < p.entryPrice ? p.currentPrice - p.entryPrice : 0
-        return sum + loss * p.quantity
-      }, 0)
-    ),
-    correlationRisk: positions.length > 0 ? Math.min(0.7, positions.length * 0.1) : 0,
-  }
+  const riskMetrics = useMemo(() => {
+    const usedCapital = positions.reduce((sum, p) => sum + (p.buyPrice || 0) * (p.shares || 0), 0)
+    return {
+      totalCapital,
+      usedCapital,
+      availableCapital: totalCapital - usedCapital,
+      maxSinglePositionRisk: positions.length > 0 
+        ? Math.max(...positions.map(p => {
+            const stopLossPercent = p.stopLossPrice && p.buyPrice 
+              ? ((p.buyPrice - p.stopLossPrice) / p.buyPrice) * 100 
+              : 5
+            return stopLossPercent
+          }), 5)
+        : 5,
+      portfolioDrawdown: Math.abs(
+        positions.reduce((sum, p) => {
+          const currentPrice = p.currentPrice || p.buyPrice || 0
+          const entryPrice = p.buyPrice || 0
+          const quantity = p.shares || 0
+          const loss = currentPrice < entryPrice ? (currentPrice - entryPrice) * quantity : 0
+          return sum + loss
+        }, 0)
+      ),
+      correlationRisk: positions.length > 0 ? Math.min(0.7, positions.length * 0.1) : 0,
+    }
+  }, [positions])
 
   // 风险分布数据
-  const riskDistribution = positions.map((p, idx) => ({
-    name: p.code,
-    risk: (p.stopLossPercent || 5) * (p.quantity * p.entryPrice) / riskMetrics.totalCapital,
-    allocation: (p.quantity * p.currentPrice) / (portfolio.positions.reduce((sum, pos) => sum + pos.currentPrice * pos.quantity, 0) || 1),
-  })).slice(0, 8)
+  const riskDistribution = useMemo(() => {
+    return positions.map((p) => {
+      const entryPrice = p.buyPrice || 0
+      const currentPrice = p.currentPrice || entryPrice
+      const quantity = p.shares || 0
+      const stopLossPercent = p.stopLossPrice && entryPrice 
+        ? ((entryPrice - p.stopLossPrice) / entryPrice) * 100 
+        : 5
+      const positionValue = quantity * currentPrice
+      const totalValue = positions.reduce((sum, pos) => sum + (pos.shares || 0) * (pos.currentPrice || pos.buyPrice || 0), 0) || 1
+      
+      return {
+        name: p.stockCode || 'N/A',
+        risk: stopLossPercent * positionValue / riskMetrics.totalCapital,
+        allocation: positionValue / totalValue,
+      }
+    }).slice(0, 8)
+  }, [positions, riskMetrics.totalCapital])
 
   // 资金分配数据
   const capitalData = [
