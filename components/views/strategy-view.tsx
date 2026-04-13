@@ -49,6 +49,7 @@ import {
 import { useStockStore } from '@/lib/store';
 import { toast } from 'sonner';
 import type { TradingStrategy, TradingCycle, BuySignal } from '@/lib/types';
+import { strategyTemplates, createStrategyFromTemplate, type StrategyTemplate } from '@/lib/strategy-templates';
 
 const cycleLabels: Record<TradingCycle, string> = {
   short: '短线交易',
@@ -77,6 +78,8 @@ export function StrategyView() {
   const [isCreating, setIsCreating] = useState(false);
   const [newStrategyName, setNewStrategyName] = useState('');
   const [newStrategyCycle, setNewStrategyCycle] = useState<TradingCycle>('swing');
+  const [selectedTemplate, setSelectedTemplate] = useState<StrategyTemplate | null>(null);
+  const [showTemplates, setShowTemplates] = useState(false);
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
     stock: true,
     buy: true,
@@ -91,6 +94,54 @@ export function StrategyView() {
 
   const toggleSection = (section: string) => {
     setExpandedSections((prev) => ({ ...prev, [section]: !prev[section] }));
+  };
+
+  const handleCreateFromTemplate = (template: StrategyTemplate) => {
+    const templateConfig = createStrategyFromTemplate(template);
+    const newStrategy: TradingStrategy = {
+      id: crypto.randomUUID(),
+      name: templateConfig.name,
+      status: 'active',
+      cycle: template.category === 'swing' ? 'swing' : template.category === 'trend' ? 'short' : 'long',
+      selectionRules: {
+        minMarketCap: template.selectionRules.minMarketCap || 50,
+        maxPE: template.selectionRules.maxPeRatio || 50,
+        minPE: template.selectionRules.minPeRatio || 0,
+        sectors: template.selectionRules.sectors || [],
+        excludeST: true,
+        excludeNewStock: true,
+      },
+      buyRules: {
+        signals: ['ma5CrossMa20', 'macdGoldenCross'],
+        minSignalCount: 2,
+        volumeCondition: true,
+        trendCondition: true,
+      },
+      sellRules: {
+        stopLossPercent: template.exitRules.stopLossPercent,
+        takeProfitPercent: template.exitRules.takeProfitPercent,
+        trailingStopEnabled: !!template.exitRules.trailingStopPercent,
+        trailingStopPercent: template.exitRules.trailingStopPercent || 8,
+        timeStopEnabled: !!template.exitRules.timeStopDays,
+        timeStopDays: template.exitRules.timeStopDays || 15,
+        timeStopMinProfit: template.exitRules.timeStopMinProfit || 5,
+      },
+      capitalRules: {
+        maxPositionRatio: template.capitalRules.maxSinglePositionRatio,
+        maxTotalPositionRatio: template.capitalRules.maxTotalPositionRatio,
+        maxSingleLossRatio: template.capitalRules.maxSingleLossRatio,
+        maxDailyLossRatio: template.capitalRules.maxDailyLossRatio,
+        maxSectorRatio: template.capitalRules.maxSectorRatio,
+      },
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    
+    addStrategy(newStrategy);
+    setActiveStrategy(newStrategy.id);
+    setShowTemplates(false);
+    setSelectedTemplate(null);
+    toast.success(`已从模板创建策略：${template.name}`);
   };
 
   const handleCreateStrategy = () => {
@@ -193,9 +244,14 @@ export function StrategyView() {
             <h1 className="text-xl font-semibold">策略配置中心</h1>
             <p className="text-sm text-muted-foreground">创建和管理您的交易系统</p>
           </div>
-          <Button onClick={() => setIsCreating(true)}>
-            <Plus className="mr-2 h-4 w-4" /> 新建策略
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => setShowTemplates(true)}>
+              <Zap className="mr-2 h-4 w-4" /> 从模板创建
+            </Button>
+            <Button onClick={() => setIsCreating(true)}>
+              <Plus className="mr-2 h-4 w-4" /> 自定义策略
+            </Button>
+          </div>
         </div>
       </header>
 
@@ -420,7 +476,7 @@ export function StrategyView() {
                 <Card>
                   <CardHeader>
                     <CardTitle className="text-base">基本面条件</CardTitle>
-                    <CardDescription>筛选财务质量良好的股票</CardDescription>
+                    <CardDescription>筛选财务��量良好的股票</CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-6">
                     <div className="space-y-2">
@@ -917,13 +973,117 @@ export function StrategyView() {
             <Settings2 className="h-16 w-16 text-muted-foreground/50" />
             <h3 className="mt-4 text-lg font-medium">还没有创建策略</h3>
             <p className="mt-2 text-sm text-muted-foreground">
-              点击"新建策略"开始创建您的第一个交易系统
+              选择预设模板快速开始，或自定义创建您的交易系统
             </p>
-            <Button className="mt-4" onClick={() => setIsCreating(true)}>
-              <Plus className="mr-2 h-4 w-4" /> 新建策略
-            </Button>
+            <div className="mt-4 flex gap-2">
+              <Button variant="outline" onClick={() => setShowTemplates(true)}>
+                <Zap className="mr-2 h-4 w-4" /> 从模板创建
+              </Button>
+              <Button onClick={() => setIsCreating(true)}>
+                <Plus className="mr-2 h-4 w-4" /> 自定义策略
+              </Button>
+            </div>
           </div>
         )}
+
+        {/* 策略模板选择对话框 */}
+        <AlertDialog open={showTemplates} onOpenChange={setShowTemplates}>
+          <AlertDialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
+            <AlertDialogHeader>
+              <AlertDialogTitle className="flex items-center gap-2">
+                <Zap className="h-5 w-5 text-primary" />
+                选择策略模板
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                基于专业投资理论设计的预设策略模板，帮助您快速建立规则化交易系统
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            
+            <div className="grid gap-4 md:grid-cols-2 py-4">
+              {strategyTemplates.map((template) => (
+                <Card 
+                  key={template.id}
+                  className={`cursor-pointer transition-all hover:border-primary/50 ${
+                    selectedTemplate?.id === template.id ? 'border-primary ring-2 ring-primary/20' : ''
+                  }`}
+                  onClick={() => setSelectedTemplate(template)}
+                >
+                  <CardHeader className="pb-2">
+                    <div className="flex items-center justify-between">
+                      <Badge variant={
+                        template.riskLevel === 'low' ? 'secondary' :
+                        template.riskLevel === 'medium' ? 'default' : 'destructive'
+                      }>
+                        {template.riskLevel === 'low' ? '低风险' :
+                         template.riskLevel === 'medium' ? '中风险' : '高风险'}
+                      </Badge>
+                      <Badge variant="outline">
+                        {template.category === 'swing' ? '波段交易' :
+                         template.category === 'trend' ? '趋势跟踪' :
+                         template.category === 'value' ? '价值投资' : '成长投资'}
+                      </Badge>
+                    </div>
+                    <CardTitle className="text-base mt-2">{template.name}</CardTitle>
+                    <CardDescription className="text-xs">{template.description}</CardDescription>
+                  </CardHeader>
+                  <CardContent className="pt-0">
+                    <div className="space-y-2 text-xs">
+                      <div className="flex items-center gap-2 text-muted-foreground">
+                        <Target className="h-3 w-3" />
+                        止损 {template.exitRules.stopLossPercent}% / 止盈 {template.exitRules.takeProfitPercent}%
+                      </div>
+                      <div className="flex items-center gap-2 text-muted-foreground">
+                        <Wallet className="h-3 w-3" />
+                        单股上限 {(template.capitalRules.maxSinglePositionRatio * 100).toFixed(0)}%
+                      </div>
+                      <div className="flex items-center gap-2 text-muted-foreground">
+                        <Shield className="h-3 w-3" />
+                        单笔风险 {(template.capitalRules.maxSingleLossRatio * 100).toFixed(0)}%
+                      </div>
+                    </div>
+                    
+                    {selectedTemplate?.id === template.id && (
+                      <div className="mt-4 pt-3 border-t space-y-2">
+                        <p className="text-xs font-medium">适合人群：</p>
+                        <div className="flex flex-wrap gap-1">
+                          {template.suitableFor.map((item, idx) => (
+                            <Badge key={idx} variant="outline" className="text-xs">
+                              {item}
+                            </Badge>
+                          ))}
+                        </div>
+                        <p className="text-xs font-medium mt-2">纪律要求：</p>
+                        <ul className="text-xs text-muted-foreground space-y-1">
+                          {template.disciplineRules.slice(0, 3).map((rule, idx) => (
+                            <li key={idx} className="flex items-start gap-1">
+                              <Check className="h-3 w-3 mt-0.5 text-primary shrink-0" />
+                              {rule}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+            
+            <AlertDialogFooter>
+              <AlertDialogCancel onClick={() => {
+                setSelectedTemplate(null);
+                setShowTemplates(false);
+              }}>
+                取消
+              </AlertDialogCancel>
+              <AlertDialogAction 
+                onClick={() => selectedTemplate && handleCreateFromTemplate(selectedTemplate)}
+                disabled={!selectedTemplate}
+              >
+                使用此模板创建策略
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     </div>
   );
