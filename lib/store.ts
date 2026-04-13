@@ -47,6 +47,8 @@ interface StockStore {
   // 观察池操作
   addToWatchlist: (stock: Omit<WatchlistStock, 'id' | 'addedAt'>) => void;
   removeFromWatchlist: (id: string) => void;
+  toggleFavorite: (id: string) => void;
+  updateWatchlistStock: (id: string, updates: Partial<WatchlistStock>) => void;
   
   // 交易记录操作
   addTradeRecord: (record: Omit<TradeRecord, 'id'>) => void;
@@ -146,6 +148,22 @@ export const useStockStore = create<StockStore>()(
       removeFromWatchlist: (id) => {
         set((state) => ({
           watchlist: state.watchlist.filter((s) => s.id !== id),
+        }));
+      },
+      
+      toggleFavorite: (id) => {
+        set((state) => ({
+          watchlist: state.watchlist.map((s) =>
+            s.id === id ? { ...s, isFavorite: !s.isFavorite } : s
+          ),
+        }));
+      },
+      
+      updateWatchlistStock: (id, updates) => {
+        set((state) => ({
+          watchlist: state.watchlist.map((s) =>
+            s.id === id ? { ...s, ...updates } : s
+          ),
         }));
       },
       

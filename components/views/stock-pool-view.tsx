@@ -55,11 +55,11 @@ import { formatPercent, getProfitColorClass } from '@/lib/mock-data';
 import { toast } from 'sonner';
 
 export function StockPoolView() {
-  const { watchlist, removeFromWatchlist, addToWatchlist, strategies, activeStrategyId, setActiveStrategy } =
+  const { watchlist, removeFromWatchlist, addToWatchlist, toggleFavorite, strategies, activeStrategyId, setActiveStrategy } =
     useStockStore();
 
   const [searchQuery, setSearchQuery] = useState('');
-  const [filterType, setFilterType] = useState<'all' | 'system' | 'manual'>('all');
+  const [filterType, setFilterType] = useState<'all' | 'favorite' | 'system' | 'manual'>('all');
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [selectedStrategyId, setSelectedStrategyId] = useState<string | null>(null);
   const [newStock, setNewStock] = useState({
@@ -85,22 +85,28 @@ export function StockPoolView() {
   // 兼容旧的 activeStrategy 变量名
   const activeStrategy = currentFilterStrategy;
 
-  const filteredStocks = useMemo(() => {
-    return watchlist.filter((stock) => {
-      // 搜索过滤
-      const matchesSearch =
-        stock.stockCode.includes(searchQuery) ||
-        stock.stockName.includes(searchQuery);
+const filteredStocks = useMemo(() => {
+  return watchlist.filter((stock) => {
+    // 搜索过滤
+    const matchesSearch =
+      stock.stockCode.includes(searchQuery) ||
+      stock.stockName.includes(searchQuery);
+    
+    // 类型过滤
+    const matchesType =
+      filterType === 'all' ||
+      (filterType === 'favorite' && stock.isFavorite) ||
+      (filterType === 'system' && stock.isSystemPick) ||
+      (filterType === 'manual' && !stock.isSystemPick);
+    
+    return matchesSearch && matchesType;
+  });
+}, [watchlist, searchQuery, filterType]);
 
-      // 类型过滤
-      const matchesType =
-        filterType === 'all' ||
-        (filterType === 'system' && stock.isSystemPick) ||
-        (filterType === 'manual' && !stock.isSystemPick);
-
-      return matchesSearch && matchesType;
-    });
-  }, [watchlist, searchQuery, filterType]);
+// 自选股票数量
+const favoriteCount = useMemo(() => {
+  return watchlist.filter((s) => s.isFavorite).length;
+}, [watchlist]);
 
   const systemPicks = watchlist.filter((s) => s.isSystemPick);
   const manualPicks = watchlist.filter((s) => !s.isSystemPick);
@@ -387,6 +393,15 @@ export function StockPoolView() {
                 >
                   <TabsList>
                     <TabsTrigger value="all">全部</TabsTrigger>
+                    <TabsTrigger value="favorite" className="relative">
+                      <Star className="mr-1 h-3 w-3" />
+                      自选
+                      {favoriteCount > 0 && (
+                        <span className="ml-1 rounded-full bg-primary px-1.5 text-xs text-primary-foreground">
+                          {favoriteCount}
+                        </span>
+                      )}
+                    </TabsTrigger>
                     <TabsTrigger value="system">系统</TabsTrigger>
                     <TabsTrigger value="manual">手动</TabsTrigger>
                   </TabsList>
@@ -427,7 +442,12 @@ export function StockPoolView() {
                     filteredStocks.map((stock) => (
                       <TableRow key={stock.id}>
                         <TableCell className="font-medium">
-                          {stock.stockCode}
+                          <div className="flex items-center gap-1.5">
+                            {stock.isFavorite && (
+                              <Star className="h-3.5 w-3.5 fill-yellow-400 text-yellow-400" />
+                            )}
+                            {stock.stockCode}
+                          </div>
                         </TableCell>
                         <TableCell>{stock.stockName}</TableCell>
                         <TableCell>
@@ -497,10 +517,29 @@ export function StockPoolView() {
                             <DropdownMenuContent align="end">
                               <DropdownMenuLabel>操作</DropdownMenuLabel>
                               <DropdownMenuSeparator />
+                              <DropdownMenuItem
+                                onClick={() => {
+                                  toggleFavorite(stock.id);
+                                  toast.success(stock.isFavorite ? '已从自选移除' : '已加入自选');
+                                }}
+                              >
+                                {stock.isFavorite ? (
+                                  <>
+                                    <StarOff className="mr-2 h-4 w-4" />
+                                    移出自选
+                                  </>
+                                ) : (
+                                  <>
+                                    <Star className="mr-2 h-4 w-4 text-yellow-500" />
+                                    加入自选
+                                  </>
+                                )}
+                              </DropdownMenuItem>
                               <DropdownMenuItem>
                                 <Eye className="mr-2 h-4 w-4" />
                                 查看详情
                               </DropdownMenuItem>
+                              <DropdownMenuSeparator />
                               <DropdownMenuItem
                                 className="text-destructive"
                                 onClick={() => {

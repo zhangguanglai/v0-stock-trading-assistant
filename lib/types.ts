@@ -235,6 +235,9 @@ export interface WatchlistStock {
   // 是否符合策略
   meetsRules: boolean;
   isSystemPick: boolean; // 系统选出 vs 手动添加
+  isFavorite: boolean;   // 是否加入自选（重点关注）
+  strategyId?: string;   // 关联的策略ID
+  notes?: string;        // 备注
   addedAt: Date;
 }
 
