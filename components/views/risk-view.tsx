@@ -27,10 +27,11 @@ import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Badge } from '@/components/ui/badge'
 import { AlertCircle, TrendingDown, TrendingUp } from 'lucide-react'
-import { useStore } from '@/lib/store'
+import { useStockStore } from '@/lib/store'
 
 export function RiskView() {
-  const { positions, portfolio } = useStore()
+  const positions = useStockStore((state) => state.positions)
+  const portfolio = useStockStore((state) => state.portfolio)
   const [selectedMetric, setSelectedMetric] = useState<string>('all')
 
   // 计算风险指标
