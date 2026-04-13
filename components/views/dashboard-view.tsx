@@ -42,8 +42,15 @@ interface DashboardViewProps {
 }
 
 export function DashboardView({ onNavigate }: DashboardViewProps) {
-  const { positions, alerts, strategies, activeStrategyId } = useStockStore();
-  const dashboardData = useStockStore((state) => state.getDashboardData());
+  const positions = useStockStore((state) => state.positions);
+  const alerts = useStockStore((state) => state.alerts);
+  const strategies = useStockStore((state) => state.strategies);
+  const activeStrategyId = useStockStore((state) => state.activeStrategyId);
+  
+  // 使用 useMemo 计算 dashboard 数据，避免无限循环
+  const dashboardData = useMemo(() => {
+    return useStockStore.getState().getDashboardData();
+  }, [positions, strategies, activeStrategyId]);
 
   const activeStrategy = useMemo(
     () => strategies.find((s) => s.id === activeStrategyId),
