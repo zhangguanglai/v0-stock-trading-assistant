@@ -54,7 +54,7 @@ import {
   ReferenceLine,
 } from 'recharts';
 import { useStockStore } from '@/lib/store';
-import { formatCurrency, formatPercent, getProfitColorClass, mockNetValueData } from '@/lib/mock-data';
+import { formatCurrency, formatPercent, getProfitColorClass } from '@/lib/mock-data';
 
 export function TradeLogView() {
   const tradeRecords = useStockStore((state) => state.tradeRecords);
@@ -278,7 +278,7 @@ export function TradeLogView() {
                   }}
                   className="h-[350px]"
                 >
-                  <AreaChart data={mockNetValueData}>
+                  <AreaChart data={[]}>
                     <defs>
                       <linearGradient id="fillValue2" x1="0" y1="0" x2="0" y2="1">
                         <stop
@@ -317,6 +317,9 @@ export function TradeLogView() {
                     />
                   </AreaChart>
                 </ChartContainer>
+                <p className="mt-4 text-center text-sm text-muted-foreground">
+                  净值曲线需要真实交易数据支撑
+                </p>
               </CardContent>
             </Card>
 
@@ -727,7 +730,7 @@ export function TradeLogView() {
                       <div>
                         <p className="font-medium">优化盈亏比</p>
                         <p className="text-sm text-muted-foreground">
-                          考虑扩大止盈目标或收紧止损线，让盈利更充分运行
+                          考虑扩大止盈目标或收紧止损线，让��利更充分运行
                         </p>
                       </div>
                     </div>

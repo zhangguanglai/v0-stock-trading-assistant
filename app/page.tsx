@@ -12,7 +12,6 @@ import { RiskView } from '@/components/views/risk-view';
 import { SystemCheckView } from '@/components/views/system-check-view';
 import { SidebarProvider, SidebarInset } from '@/components/ui/sidebar';
 import { useStockStore, initializeDefaultStrategy } from '@/lib/store';
-import { mockPositions, mockWatchlist, mockTradeRecords, mockAlerts } from '@/lib/mock-data';
 import { createClient } from '@/lib/supabase/client';
 
 export type ViewType = 'dashboard' | 'strategy' | 'stockpool' | 'position' | 'calculator' | 'tradelog' | 'risk' | 'systemcheck';
@@ -22,33 +21,12 @@ export default function Home() {
   const [user, setUser] = useState<{ id: string; email?: string } | null>(null);
   const initializedRef = useRef(false);
   
-  // 立即初始化数据（同步执行，不阻塞渲染）
+  // 初始化策略（不加载模拟数据）
   useEffect(() => {
     if (initializedRef.current) return;
     initializedRef.current = true;
     
     initializeDefaultStrategy();
-    const store = useStockStore.getState();
-    
-    if (store.positions.length === 0) {
-      mockPositions.forEach((p) => {
-        store.addPosition({ ...p, strategyId: store.activeStrategyId || '' });
-      });
-    }
-    
-    if (store.watchlist.length === 0) {
-      mockWatchlist.forEach((s) => store.addToWatchlist(s));
-    }
-    
-    if (store.tradeRecords.length === 0) {
-      mockTradeRecords.forEach((r) => {
-        store.addTradeRecord({ ...r, strategyId: store.activeStrategyId || '' });
-      });
-    }
-    
-    if (store.alerts.length === 0) {
-      mockAlerts.forEach((a) => store.addAlert(a));
-    }
   }, []);
 
   // 后台异步检查用户登录状态（不阻塞渲染）

@@ -35,7 +35,7 @@ import {
   Cell,
 } from 'recharts';
 import { useStockStore } from '@/lib/store';
-import { formatCurrency, formatPercent, getProfitColorClass, mockNetValueData } from '@/lib/mock-data';
+import { formatCurrency, formatPercent, getProfitColorClass } from '@/lib/mock-data';
 import type { ViewType } from '@/app/page';
 
 interface DashboardViewProps {
@@ -235,7 +235,7 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
                 }}
                 className="h-[300px]"
               >
-                <AreaChart data={mockNetValueData}>
+                <AreaChart data={[]}>
                   <defs>
                     <linearGradient id="fillValue" x1="0" y1="0" x2="0" y2="1">
                       <stop offset="5%" stopColor="hsl(var(--chart-1))" stopOpacity={0.3} />
@@ -263,6 +263,9 @@ export function DashboardView({ onNavigate }: DashboardViewProps) {
                   />
                 </AreaChart>
               </ChartContainer>
+              <p className="mt-4 text-center text-sm text-muted-foreground">
+                净值曲线需要真实交易数据支撑，请开始进行实际交易
+              </p>
             </CardContent>
           </Card>
 

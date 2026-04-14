@@ -11,7 +11,6 @@ import { PositionView } from '@/components/views/position-view'
 import { TradeLogView } from '@/components/views/trade-log-view'
 import { RiskView } from '@/components/views/risk-view'
 import { useStore } from '@/lib/store'
-import { mockPortfolio, mockPositions } from '@/lib/mock-data'
 import { createClient } from '@/lib/supabase/client'
 
 interface AppContainerProps {
@@ -23,9 +22,6 @@ export function AppContainer({ currentView }: AppContainerProps) {
   const [user, setUser] = useState<{ id: string; email?: string } | null>(null)
 
   useEffect(() => {
-    // 初始化数据
-    initializeStore(mockPortfolio, mockPositions)
-
     // 获取当前用户
     const getUser = async () => {
       const supabase = createClient()
@@ -38,7 +34,7 @@ export function AppContainer({ currentView }: AppContainerProps) {
       }
     }
     getUser()
-  }, [initializeStore])
+  }, [])
 
   const renderView = () => {
     switch (currentView) {
