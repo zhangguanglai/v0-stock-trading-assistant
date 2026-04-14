@@ -60,6 +60,15 @@ import { toast } from 'sonner';
 export function StockPoolView() {
   const { watchlist, removeFromWatchlist, addToWatchlist, toggleFavorite, strategies, activeStrategyId, setActiveStrategy } =
     useStockStore();
+  
+  // 清除所有股票池数据（用于重新扫描）
+  const clearWatchlist = () => {
+    // 移除所有系统选出的股票
+    watchlist.filter(s => s.isSystemPick).forEach(s => {
+      removeFromWatchlist(s.id);
+    });
+    toast.success('已清除系统选出的股票，请重新扫描');
+  };
 
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState<'all' | 'favorite' | 'system' | 'manual'>('all');
@@ -126,6 +135,49 @@ const favoriteCount = useMemo(() => {
   return watchlist.filter((s) => s.isFavorite).length;
 }, [watchlist]);
 
+// 基于当前策略规则实时验证股票是否符合条件
+// 注意：由于没有实时市值数据，这里只是标记需要重新验证
+const validateStockRules = useMemo(() => {
+  if (!currentFilterStrategy?.stockRules) {
+    return (stock: typeof watchlist[0]) => ({
+      meetsRules: stock.meetsRules,
+      reason: '',
+    });
+  }
+  
+  const rules = currentFilterStrategy.stockRules;
+  
+  return (stock: typeof watchlist[0]) => {
+    const violations: string[] = [];
+    
+    // ROE验证
+    if (rules.minROE > 0 && stock.roe > 0 && stock.roe < rules.minROE) {
+      violations.push(`ROE(${stock.roe.toFixed(1)}%) < ${rules.minROE}%`);
+    }
+    
+    // 负债率验证
+    if (rules.maxDebtRatio > 0 && stock.debtRatio > 0 && stock.debtRatio > rules.maxDebtRatio) {
+      violations.push(`负债率(${stock.debtRatio.toFixed(1)}%) > ${rules.maxDebtRatio}%`);
+    }
+    
+    // 量比验证
+    if (rules.volumeRatio > 0 && stock.volumeRatio > 0 && stock.volumeRatio < rules.volumeRatio) {
+      violations.push(`量比(${stock.volumeRatio.toFixed(2)}) < ${rules.volumeRatio}`);
+    }
+    
+    // 市值验证需要额外的市值数据，这里无法验证
+    // 但我们可以标记为"待验证"
+    if (rules.maxMarketCap > 0) {
+      // 市值数据需要从API获取，这里暂时跳过
+    }
+    
+    return {
+      meetsRules: violations.length === 0,
+      reason: violations.join(', '),
+    };
+  };
+}, [currentFilterStrategy]);
+
   const systemPicks = watchlist.filter((s) => s.isSystemPick);
   const manualPicks = watchlist.filter((s) => !s.isSystemPick);
 
@@ -161,13 +213,33 @@ const favoriteCount = useMemo(() => {
   const handleScan = async () => {
     setIsScanning(true);
     try {
-      const response = await fetch('/api/stock/scan');
+      // 构建基于当前策略规则的扫描参数
+      const params = new URLSearchParams();
+      
+      if (currentFilterStrategy?.stockRules) {
+        const rules = currentFilterStrategy.stockRules;
+        if (rules.maxMarketCap > 0) {
+          params.set('maxMarketCap', rules.maxMarketCap.toString());
+        }
+        if (rules.minROE > 0) {
+          params.set('minROE', rules.minROE.toString());
+        }
+        if (rules.maxDebtRatio > 0) {
+          params.set('maxDebtRatio', rules.maxDebtRatio.toString());
+        }
+        if (rules.minTurnoverRate5D > 0) {
+          params.set('minTurnoverRate', rules.minTurnoverRate5D.toString());
+        }
+      }
+      
+      const url = `/api/stock/scan${params.toString() ? '?' + params.toString() : ''}`;
+      const response = await fetch(url);
       const result = await response.json();
       
       if (result.success && result.data) {
-        const { stocks, note } = result.data;
+        const { stocks, matchCount, note } = result.data;
         
-        // 将扫描结果添加到观察池
+        // 将符合规则的扫描结果添加到观察池
         let addedCount = 0;
         for (const stock of stocks) {
           // 检查是否已存在
@@ -181,7 +253,7 @@ const favoriteCount = useMemo(() => {
               changePercent: stock.changePercent,
               priceVsMA5: 0,
               priceVsMA20: 0,
-              volumeRatio: 1,
+              volumeRatio: stock.volumeRatio || 1,
               roe: 0,
               debtRatio: 0,
               pePercentile: 0,
@@ -194,9 +266,15 @@ const favoriteCount = useMemo(() => {
           }
         }
         
-        toast.success(`扫描完成！发现 ${stocks.length} 只股票，新增 ${addedCount} 只到观察池`, {
-          description: note,
-        });
+        if (matchCount === 0) {
+          toast.warning(`扫描完成！共扫描 ${stocks.length} 只股票，但无符合当前策略规则的股票`, {
+            description: note,
+          });
+        } else {
+          toast.success(`扫描完成！${matchCount}/${stocks.length} 只符合规则，新增 ${addedCount} 只到观察池`, {
+            description: note,
+          });
+        }
       } else {
         toast.error(result.error || '扫描失败');
       }
@@ -220,7 +298,16 @@ const favoriteCount = useMemo(() => {
             </p>
           </div>
           <div className="flex items-center gap-2">
-<Button variant="outline" onClick={handleScan} disabled={isScanning}>
+<Button 
+              variant="ghost" 
+              size="sm"
+              onClick={clearWatchlist}
+              className="text-muted-foreground hover:text-destructive"
+            >
+              <Trash2 className="mr-1 h-4 w-4" />
+              清除
+            </Button>
+            <Button variant="outline" onClick={handleScan} disabled={isScanning}>
               {isScanning ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               ) : (

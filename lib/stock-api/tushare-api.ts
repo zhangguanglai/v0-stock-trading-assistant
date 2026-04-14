@@ -225,6 +225,130 @@ export async function getFinanceIndicators(code: string): Promise<ApiResponse<{
   };
 }
 
+// 获取每日基本面数据（含市值、PE、PB、换手率等）
+export async function getDailyBasic(codes: string[]): Promise<ApiResponse<{
+  code: string;
+  name?: string;
+  marketCap: number;      // 总市值（亿）
+  circulatingCap: number; // 流通市值（亿）
+  pe: number;             // 市盈率
+  pb: number;             // 市净率
+  turnoverRate: number;   // 换手率（%）
+  volumeRatio: number;    // 量比
+}[]>> {
+  // 获取最新交易日期
+  const today = new Date();
+  const tradeDate = today.toISOString().slice(0, 10).replace(/-/g, '');
+  
+  const tsCodes = codes.map(toTushareCode).join(',');
+  
+  const result = await tushareRequest<{
+    fields: string[];
+    items: (string | number | null)[][];
+  }>('daily_basic', { 
+    ts_code: tsCodes,
+    trade_date: tradeDate,
+  }, 'ts_code,total_mv,circ_mv,pe,pb,turnover_rate,volume_ratio');
+  
+  if (!result.success || !result.data) {
+    // 如果当日无数据，尝试前一个交易日
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const yesterdayStr = yesterday.toISOString().slice(0, 10).replace(/-/g, '');
+    
+    const retryResult = await tushareRequest<{
+      fields: string[];
+      items: (string | number | null)[][];
+    }>('daily_basic', { 
+      ts_code: tsCodes,
+      trade_date: yesterdayStr,
+    }, 'ts_code,total_mv,circ_mv,pe,pb,turnover_rate,volume_ratio');
+    
+    if (!retryResult.success || !retryResult.data) {
+      return {
+        success: false,
+        error: result.error || '获取基本面数据失败',
+        timestamp: Date.now(),
+      };
+    }
+    
+    result.data = retryResult.data;
+  }
+  
+  const basicData = result.data.items.map((item) => {
+    const tsCode = String(item[0] || '');
+    const code = tsCode.split('.')[0];
+    
+    return {
+      code,
+      marketCap: Number(item[1] || 0) / 10000,    // 转换为亿（Tushare返回万元）
+      circulatingCap: Number(item[2] || 0) / 10000,
+      pe: Number(item[3] || 0),
+      pb: Number(item[4] || 0),
+      turnoverRate: Number(item[5] || 0),
+      volumeRatio: Number(item[6] || 1),
+    };
+  });
+  
+  return {
+    success: true,
+    data: basicData,
+    timestamp: Date.now(),
+  };
+}
+
+// 根据市值范围筛选股票
+export async function getStocksByMarketCap(
+  minCap: number = 0,
+  maxCap: number = 100,
+  limit: number = 50
+): Promise<ApiResponse<{
+  code: string;
+  name: string;
+  marketCap: number;
+  industry: string;
+}[]>> {
+  // 使用daily_basic获取所有股票的市值
+  // 注意：Tushare免费用户每分钟有次数限制
+  const result = await tushareRequest<{
+    fields: string[];
+    items: (string | number | null)[][];
+  }>('daily_basic', {
+    trade_date: new Date().toISOString().slice(0, 10).replace(/-/g, ''),
+  }, 'ts_code,total_mv');
+  
+  if (!result.success || !result.data) {
+    return {
+      success: false,
+      error: result.error || '获取市值数据失败',
+      timestamp: Date.now(),
+    };
+  }
+  
+  // 筛选市值范围内的股票
+  const filteredStocks = result.data.items
+    .filter((item) => {
+      const marketCap = Number(item[1] || 0) / 10000; // 转换为亿
+      return marketCap >= minCap && marketCap <= maxCap;
+    })
+    .slice(0, limit)
+    .map((item) => {
+      const tsCode = String(item[0] || '');
+      return {
+        code: tsCode.split('.')[0],
+        name: '', // 需要另外获取
+        marketCap: Number(item[1] || 0) / 10000,
+        industry: '',
+      };
+    });
+  
+  return {
+    success: true,
+    data: filteredStocks,
+    timestamp: Date.now(),
+  };
+}
+
 // 检查Tushare Token是否配置
 export function isTushareConfigured(): boolean {
   return !!process.env.TUSHARE_TOKEN;
