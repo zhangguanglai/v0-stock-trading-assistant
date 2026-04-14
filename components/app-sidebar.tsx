@@ -15,6 +15,7 @@ import {
   Shield,
   LogOut,
   User,
+  Zap,
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import {
@@ -71,6 +72,11 @@ const menuItems = [
     id: 'risk' as ViewType,
     label: '风险透视仪',
     icon: Shield,
+  },
+  {
+    id: 'systemcheck' as ViewType,
+    label: '系统诊断',
+    icon: Zap,
   },
 ];
 

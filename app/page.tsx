@@ -9,12 +9,13 @@ import { PositionView } from '@/components/views/position-view';
 import { TradeLogView } from '@/components/views/trade-log-view';
 import { CalculatorView } from '@/components/views/calculator-view';
 import { RiskView } from '@/components/views/risk-view';
+import { SystemCheckView } from '@/components/views/system-check-view';
 import { SidebarProvider, SidebarInset } from '@/components/ui/sidebar';
 import { useStockStore, initializeDefaultStrategy } from '@/lib/store';
 import { mockPositions, mockWatchlist, mockTradeRecords, mockAlerts } from '@/lib/mock-data';
 import { createClient } from '@/lib/supabase/client';
 
-export type ViewType = 'dashboard' | 'strategy' | 'stockpool' | 'position' | 'calculator' | 'tradelog' | 'risk';
+export type ViewType = 'dashboard' | 'strategy' | 'stockpool' | 'position' | 'calculator' | 'tradelog' | 'risk' | 'systemcheck';
 
 export default function Home() {
   const [currentView, setCurrentView] = useState<ViewType>('dashboard');
@@ -91,6 +92,8 @@ export default function Home() {
         return <TradeLogView />;
       case 'risk':
         return <RiskView />;
+      case 'systemcheck':
+        return <SystemCheckView />;
       default:
         return <DashboardView onNavigate={setCurrentView} />;
     }
