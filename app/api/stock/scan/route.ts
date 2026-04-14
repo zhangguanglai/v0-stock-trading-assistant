@@ -1,7 +1,7 @@
 // 智能选股扫描API
 // 根据策略规则扫描符合条件的股票
 import { NextRequest, NextResponse } from 'next/server';
-import { getBatchQuotes, getDailyBasic, isTushareConfigured } from '@/lib/stock-api';
+import { getBatchQuotes, getDailyBasic, getStockBasic, getFinanceIndicators, isTushareConfigured } from '@/lib/stock-api';
 
 export const dynamic = 'force-dynamic';
 
@@ -71,7 +71,7 @@ export async function GET(request: NextRequest) {
       });
     }
     
-    // 2. 如果配置了Tushare，获取基本面数据（含市值）
+    // 2. 如果配置了Tushare，获取基本面数据（含市值、行业、ROE等）
     let basicDataMap: Map<string, {
       marketCap: number;
       pe: number;
@@ -80,7 +80,11 @@ export async function GET(request: NextRequest) {
       volumeRatio: number;
     }> = new Map();
     
+    let industryMap: Map<string, string> = new Map();
+    let financeMap: Map<string, { roe: number; debtRatio: number }> = new Map();
+    
     if (isTushareConfigured()) {
+      // 获取每日基本面数据（市值、换手率等）
       const basicResult = await getDailyBasic(SMALL_CAP_STOCKS);
       if (basicResult.success && basicResult.data) {
         basicResult.data.forEach(item => {
@@ -92,6 +96,29 @@ export async function GET(request: NextRequest) {
             volumeRatio: item.volumeRatio,
           });
         });
+      }
+      
+      // 获取股票基本信息（行业）
+      const stockInfoResult = await getStockBasic();
+      if (stockInfoResult.success && stockInfoResult.data) {
+        stockInfoResult.data.forEach(item => {
+          industryMap.set(item.code, item.industry || '未知');
+        });
+      }
+      
+      // 获取财务指标（ROE、负债率）- 只获取前几只，避免API限制
+      for (const code of SMALL_CAP_STOCKS.slice(0, 10)) {
+        try {
+          const finResult = await getFinanceIndicators(code);
+          if (finResult.success && finResult.data) {
+            financeMap.set(code, {
+              roe: finResult.data.roe,
+              debtRatio: finResult.data.debtRatio,
+            });
+          }
+        } catch {
+          // 忽略单个股票的错误
+        }
       }
     }
     
@@ -172,6 +199,10 @@ export async function GET(request: NextRequest) {
           }
         }
         
+        // 获取行业和财务数据
+        const industry = industryMap.get(code) || '待分类';
+        const finance = financeMap.get(code);
+        
         return {
           code,
           name: quote.name,
@@ -179,11 +210,14 @@ export async function GET(request: NextRequest) {
           changePercent: quote.changePercent,
           volume: quote.volume,
           amount: quote.amount,
+          industry,
           marketCap: basicData?.marketCap || null,
           pe: basicData?.pe || null,
           pb: basicData?.pb || null,
           turnoverRate: basicData?.turnoverRate || null,
           volumeRatio: basicData?.volumeRatio || 1,
+          roe: finance?.roe || null,
+          debtRatio: finance?.debtRatio || null,
           score: Math.max(0, Math.min(100, score)),
           ruleChecks,
           meetsRules: meetsAllRules,

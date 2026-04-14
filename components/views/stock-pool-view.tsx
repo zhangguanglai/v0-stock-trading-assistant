@@ -55,7 +55,9 @@ import { useStockStore } from '@/lib/store';
 import { formatCurrency, formatPercent, getProfitColorClass } from '@/lib/mock-data';
 import { useStockSearch } from '@/hooks/use-stock-search';
 import { useStockQuote } from '@/hooks/use-realtime-quotes';
+import { StockDetailDialog } from '@/components/stock-detail-dialog';
 import { toast } from 'sonner';
+import type { WatchlistStock } from '@/lib/types';
 
 export function StockPoolView() {
   const { watchlist, removeFromWatchlist, addToWatchlist, toggleFavorite, strategies, activeStrategyId, setActiveStrategy } =
@@ -74,6 +76,8 @@ export function StockPoolView() {
   const [filterType, setFilterType] = useState<'all' | 'favorite' | 'system' | 'manual'>('all');
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [selectedStrategyId, setSelectedStrategyId] = useState<string | null>(null);
+  const [detailStock, setDetailStock] = useState<WatchlistStock | null>(null);
+  const [isDetailOpen, setIsDetailOpen] = useState(false);
   const [stockSearchKeyword, setStockSearchKeyword] = useState('');
   const [selectedSearchResult, setSelectedSearchResult] = useState<{
     code: string;
@@ -248,15 +252,15 @@ const validateStockRules = useMemo(() => {
             addToWatchlist({
               stockCode: stock.code,
               stockName: stock.name,
-              sector: '待分类',
+              sector: stock.industry || '待分类',
               currentPrice: stock.price,
               changePercent: stock.changePercent,
               priceVsMA5: 0,
               priceVsMA20: 0,
               volumeRatio: stock.volumeRatio || 1,
-              roe: 0,
-              debtRatio: 0,
-              pePercentile: 0,
+              roe: stock.roe || 0,
+              debtRatio: stock.debtRatio || 0,
+              pePercentile: stock.pe || 0,
               meetsRules: true,
               isSystemPick: true,
               isFavorite: false,
@@ -804,7 +808,12 @@ const validateStockRules = useMemo(() => {
                                   </>
                                 )}
                               </DropdownMenuItem>
-                              <DropdownMenuItem>
+                              <DropdownMenuItem
+                                onClick={() => {
+                                  setDetailStock(stock);
+                                  setIsDetailOpen(true);
+                                }}
+                              >
                                 <Eye className="mr-2 h-4 w-4" />
                                 查看详情
                               </DropdownMenuItem>
@@ -831,6 +840,14 @@ const validateStockRules = useMemo(() => {
           </CardContent>
         </Card>
       </div>
+
+      {/* 股票详情弹窗 */}
+      <StockDetailDialog
+        stock={detailStock}
+        open={isDetailOpen}
+        onOpenChange={setIsDetailOpen}
+        onToggleFavorite={toggleFavorite}
+      />
     </div>
   );
 }

@@ -18,9 +18,9 @@ export const formatPercent = (value: number): string => {
   return sign + value.toFixed(2) + '%';
 };
 
-// 获取颜色类名
+// 获取颜色类名（中国股市：红涨绿跌）
 export const getProfitColorClass = (value: number): string => {
-  if (value > 0) return 'text-chart-1';
-  if (value < 0) return 'text-destructive';
+  if (value > 0) return 'text-red-500';   // 上涨用红色
+  if (value < 0) return 'text-green-500'; // 下跌用绿色
   return 'text-muted-foreground';
 };
