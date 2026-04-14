@@ -69,7 +69,7 @@ export const useStockStore = create<StockStore>()(
       strategies: [],
       activeStrategyId: null,
       positions: [],
-      watchlist: [],
+      watchlist: [],  // 空数组 - 不加载任何硬编码数据
       tradeRecords: [],
       alerts: [],
       

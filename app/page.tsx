@@ -12,6 +12,7 @@ import { RiskView } from '@/components/views/risk-view';
 import { SystemCheckView } from '@/components/views/system-check-view';
 import { SidebarProvider, SidebarInset } from '@/components/ui/sidebar';
 import { useStockStore, initializeDefaultStrategy } from '@/lib/store';
+import { clearMockDataFromStorage, isRealDataMode } from '@/lib/clear-cache';
 import { createClient } from '@/lib/supabase/client';
 
 export type ViewType = 'dashboard' | 'strategy' | 'stockpool' | 'position' | 'calculator' | 'tradelog' | 'risk' | 'systemcheck';
@@ -25,6 +26,13 @@ export default function Home() {
   useEffect(() => {
     if (initializedRef.current) return;
     initializedRef.current = true;
+    
+    // 清除所有旧的硬编码模拟数据
+    clearMockDataFromStorage();
+    
+    // 检查当前是否为真实数据模式
+    const isReal = isRealDataMode();
+    console.log('[v0] 真实数据模式:', isReal);
     
     initializeDefaultStrategy();
   }, []);
