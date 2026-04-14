@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
@@ -40,7 +41,7 @@ interface StockQuote {
   open: number;
   high: number;
   low: number;
-  preClose: number;
+  prevClose: number;  // 昨收价
   volume: number;
   amount: number;
 }
@@ -83,7 +84,7 @@ export function StockDetailDialog({
             open: q.open,
             high: q.high,
             low: q.low,
-            preClose: q.preClose,
+            prevClose: q.prevClose,  // 新浪API返回prevClose
             volume: q.volume,
             amount: q.amount,
           });
@@ -149,6 +150,9 @@ export function StockDetailDialog({
               </Button>
             </div>
           </DialogTitle>
+          <DialogDescription className="sr-only">
+            查看{stock.stockName}的详细信息，包括实时行情、技术指标和基本面数据
+          </DialogDescription>
         </DialogHeader>
 
         {loading ? (
@@ -194,27 +198,27 @@ export function StockDetailDialog({
                     </div>
                     <div>
                       <p className="text-muted-foreground">最高</p>
-                      <p className="font-medium text-red-500">{quote.high.toFixed(2)}</p>
+                      <p className="font-medium text-red-500">{quote.high?.toFixed(2) ?? '-'}</p>
                     </div>
                     <div>
                       <p className="text-muted-foreground">最低</p>
-                      <p className="font-medium text-green-500">{quote.low.toFixed(2)}</p>
+                      <p className="font-medium text-green-500">{quote.low?.toFixed(2) ?? '-'}</p>
                     </div>
                     <div>
                       <p className="text-muted-foreground">昨收</p>
-                      <p className="font-medium">{quote.preClose.toFixed(2)}</p>
+                      <p className="font-medium">{quote.prevClose?.toFixed(2) ?? '-'}</p>
                     </div>
                     <div>
                       <p className="text-muted-foreground">成交量</p>
-                      <p className="font-medium">{formatCurrency(quote.volume)}手</p>
+                      <p className="font-medium">{quote.volume ? formatCurrency(quote.volume) + '手' : '-'}</p>
                     </div>
                     <div>
                       <p className="text-muted-foreground">成交额</p>
-                      <p className="font-medium">{formatCurrency(quote.amount)}</p>
+                      <p className="font-medium">{quote.amount ? formatCurrency(quote.amount) : '-'}</p>
                     </div>
                     <div>
                       <p className="text-muted-foreground">量比</p>
-                      <p className="font-medium">{stock.volumeRatio.toFixed(2)}</p>
+                      <p className="font-medium">{indicators?.volumeRatio?.toFixed(2) ?? stock.volumeRatio?.toFixed(2) ?? '-'}</p>
                     </div>
                     <div>
                       <p className="text-muted-foreground">换手率</p>

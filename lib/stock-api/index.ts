@@ -7,7 +7,7 @@ export * from './indicators';
 
 // 便捷方法：获取股票完整数据（实时行情 + 技术指标）
 import { getRealtimeQuote, getBatchQuotes } from './sina-api';
-import { getDailyKLine, isTushareConfigured } from './tushare-api';
+import { getDailyKLine, getDailyBasic, isTushareConfigured } from './tushare-api';
 import { calculateAllIndicators, generateSignals, calculateScore } from './indicators';
 import type { RealtimeQuote, TechnicalIndicators, StockSignal, ApiResponse } from './types';
 
@@ -34,20 +34,45 @@ export async function getStockFullData(code: string): Promise<ApiResponse<StockF
   let indicators: TechnicalIndicators | null = null;
   let signals: StockSignal[] = [];
   let score = 50;
+  let volumeRatio = 1;
   
-  // 2. 如果Tushare配置了，获取K线计算技术指标
+  // 2. 如果Tushare配置了，获取K线计算技术指标和量比
   if (isTushareConfigured()) {
+    // 获取K线数据计算技术指标
     const klineResult = await getDailyKLine(code);
     if (klineResult.success && klineResult.data && klineResult.data.length > 0) {
       indicators = calculateAllIndicators(klineResult.data);
       signals = generateSignals(quote.price, indicators);
       score = calculateScore(indicators, signals);
     }
+    
+    // 获取每日基本面数据（含量比）
+    const basicResult = await getDailyBasic([code]);
+    if (basicResult.success && basicResult.data?.[0]) {
+      volumeRatio = basicResult.data[0].volumeRatio || 1;
+    }
   } else {
     // 没有Tushare时，使用简化的信号生成
     signals = generateSimpleSignals(quote);
     score = 50 + signals.filter(s => s.type === 'buy').length * 10 
               - signals.filter(s => s.type === 'sell').length * 10;
+  }
+  
+  // 合并量比到指标中
+  if (indicators) {
+    indicators.volumeRatio = volumeRatio;
+  } else {
+    indicators = {
+      ma5: null,
+      ma10: null,
+      ma20: null,
+      ma60: null,
+      macd: { dif: 0, dea: 0, macd: 0 },
+      rsi: { rsi6: 0, rsi12: 0, rsi24: 0 },
+      kdj: { k: 0, d: 0, j: 0 },
+      boll: { upper: 0, middle: 0, lower: 0 },
+      volumeRatio,
+    };
   }
   
   return {
