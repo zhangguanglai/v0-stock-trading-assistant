@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import {
   TrendingUp,
   TrendingDown,
@@ -17,6 +17,9 @@ import {
   MoreHorizontal,
   ChevronDown,
   Check,
+  RefreshCw,
+  Wifi,
+  WifiOff,
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -60,6 +63,7 @@ import {
 } from '@/components/ui/collapsible';
 import { useStockStore } from '@/lib/store';
 import { formatCurrency, formatPercent, getProfitColorClass } from '@/lib/mock-data';
+import { useRealtimeQuotes } from '@/hooks/use-realtime-quotes';
 import { toast } from 'sonner';
 import type { Position } from '@/lib/types';
 
@@ -78,25 +82,80 @@ export function PositionView() {
   const [isSellDialogOpen, setIsSellDialogOpen] = useState(false);
   const [sellShares, setSellShares] = useState(0);
   const [expandedCards, setExpandedCards] = useState<Set<string>>(new Set());
+  const [isRealtimeEnabled, setIsRealtimeEnabled] = useState(true);
+
+  // 获取所有持仓股票代码
+  const positionCodes = useMemo(
+    () => positions.map((p) => p.stockCode).filter(Boolean),
+    [positions]
+  );
+
+  // 实时行情数据
+  const { quotes, isLoading: quotesLoading, lastUpdate, refresh: refreshQuotes } = useRealtimeQuotes({
+    codes: positionCodes,
+    interval: 5000, // 5秒刷新
+    enabled: isRealtimeEnabled && positionCodes.length > 0,
+  });
+
+  // 合并实时行情到持仓数据
+  const positionsWithRealtime = useMemo(() => {
+    return positions.map((p) => {
+      const quote = quotes.get(p.stockCode);
+      if (quote && quote.price > 0) {
+        return {
+          ...p,
+          currentPrice: quote.price,
+          // 计算实时涨跌幅
+          todayChange: quote.changePercent,
+        };
+      }
+      return p;
+    });
+  }, [positions, quotes]);
+
+  // 当实时行情更新时，检查止损止盈触发
+  useEffect(() => {
+    if (quotes.size === 0) return;
+    
+    positions.forEach((position) => {
+      const quote = quotes.get(position.stockCode);
+      if (!quote || quote.price <= 0) return;
+      
+      const currentPrice = quote.price;
+      const profitPercent = ((currentPrice - position.buyPrice) / position.buyPrice) * 100;
+      
+      // 检查止损触发
+      if (position.stopLossPrice && currentPrice <= position.stopLossPrice && !position.alertTriggered) {
+        toast.error(`止损预警: ${position.stockName}(${position.stockCode}) 已触及止损价 ¥${position.stopLossPrice.toFixed(2)}`);
+        updatePosition(position.id, { alertTriggered: true });
+      }
+      
+      // 检查止盈触发
+      if (position.takeProfitPrice && currentPrice >= position.takeProfitPrice && !position.alertTriggered) {
+        toast.success(`止盈提醒: ${position.stockName}(${position.stockCode}) 已达止盈价 ¥${position.takeProfitPrice.toFixed(2)}`);
+        updatePosition(position.id, { alertTriggered: true });
+      }
+    });
+  }, [quotes, positions, updatePosition]);
 
   const activeStrategy = useMemo(
     () => strategies.find((s) => s.id === activeStrategyId),
     [strategies, activeStrategyId]
   );
 
-  // 计算持仓统计
+  // 计算持仓统计（使用实时数据）
   const stats = useMemo(() => {
-    const totalCost = positions.reduce((sum, p) => sum + p.buyPrice * p.shares, 0);
-    const totalMarketValue = positions.reduce(
+    const totalCost = positionsWithRealtime.reduce((sum, p) => sum + p.buyPrice * p.shares, 0);
+    const totalMarketValue = positionsWithRealtime.reduce(
       (sum, p) => sum + p.currentPrice * p.shares,
       0
     );
     const totalProfit = totalMarketValue - totalCost;
-    const profitPositions = positions.filter(
+    const profitPositions = positionsWithRealtime.filter(
       (p) => p.currentPrice > p.buyPrice
     ).length;
-    const lossPositions = positions.length - profitPositions;
-    const alertCount = positions.filter((p) => p.alertTriggered).length;
+    const lossPositions = positionsWithRealtime.length - profitPositions;
+    const alertCount = positionsWithRealtime.filter((p) => p.alertTriggered).length;
 
     return {
       totalCost,
@@ -107,7 +166,7 @@ export function PositionView() {
       lossPositions,
       alertCount,
     };
-  }, [positions]);
+  }, [positionsWithRealtime]);
 
   const toggleExpand = (id: string) => {
     const newExpanded = new Set(expandedCards);
@@ -221,12 +280,42 @@ export function PositionView() {
               监控持仓，管理止盈止损哨兵
             </p>
           </div>
-          {stats.alertCount > 0 && (
-            <Badge variant="destructive" className="gap-1">
-              <AlertTriangle className="h-3 w-3" />
-              {stats.alertCount} 个警报
-            </Badge>
-          )}
+  <div className="flex items-center gap-2">
+    {/* 实时行情状态 */}
+    <div className="flex items-center gap-2">
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={() => setIsRealtimeEnabled(!isRealtimeEnabled)}
+        className={isRealtimeEnabled ? 'text-green-500' : 'text-muted-foreground'}
+      >
+        {isRealtimeEnabled ? (
+          <Wifi className="h-4 w-4" />
+        ) : (
+          <WifiOff className="h-4 w-4" />
+        )}
+      </Button>
+      {isRealtimeEnabled && lastUpdate && (
+        <span className="text-xs text-muted-foreground">
+          {lastUpdate.toLocaleTimeString()}
+        </span>
+      )}
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={refreshQuotes}
+        disabled={quotesLoading}
+      >
+        <RefreshCw className={`h-4 w-4 ${quotesLoading ? 'animate-spin' : ''}`} />
+      </Button>
+    </div>
+    {stats.alertCount > 0 && (
+      <Badge variant="destructive" className="gap-1">
+        <AlertTriangle className="h-3 w-3" />
+        {stats.alertCount} 个警报
+      </Badge>
+    )}
+  </div>
         </div>
       </header>
 
@@ -317,7 +406,7 @@ export function PositionView() {
               </CardContent>
             </Card>
           ) : (
-            positions.map((position) => {
+            positionsWithRealtime.map((position) => {
               const status = getPositionStatus(position);
               const isExpanded = expandedCards.has(position.id);
               const profitAmount =

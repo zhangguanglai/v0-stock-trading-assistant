@@ -18,6 +18,7 @@ import {
   ChevronDown,
   Zap,
   Settings2,
+  Loader2,
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -51,7 +52,9 @@ import {
 } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useStockStore } from '@/lib/store';
-import { formatPercent, getProfitColorClass } from '@/lib/mock-data';
+import { formatCurrency, formatPercent, getProfitColorClass } from '@/lib/mock-data';
+import { useStockSearch } from '@/hooks/use-stock-search';
+import { useStockQuote } from '@/hooks/use-realtime-quotes';
 import { toast } from 'sonner';
 
 export function StockPoolView() {
@@ -62,11 +65,26 @@ export function StockPoolView() {
   const [filterType, setFilterType] = useState<'all' | 'favorite' | 'system' | 'manual'>('all');
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [selectedStrategyId, setSelectedStrategyId] = useState<string | null>(null);
+  const [stockSearchKeyword, setStockSearchKeyword] = useState('');
+  const [selectedSearchResult, setSelectedSearchResult] = useState<{
+    code: string;
+    name: string;
+    market: string;
+  } | null>(null);
   const [newStock, setNewStock] = useState({
     stockCode: '',
     stockName: '',
     sector: '',
   });
+
+  // 股票搜索
+  const { results: searchResults, isSearching, search: performSearch, clear: clearSearch } = useStockSearch();
+  
+  // 获取选中股票的实时行情
+  const { quote: selectedQuote, isLoading: quoteLoading } = useStockQuote(
+    selectedSearchResult?.code || null,
+    !!selectedSearchResult
+  );
 
   // 获取所有激活的策略
   const activeStrategies = useMemo(
@@ -138,8 +156,55 @@ const favoriteCount = useMemo(() => {
     toast.success('股票已添加到观察池');
   };
 
-  const handleScan = () => {
-    toast.success('扫描完成，已更新股票池');
+  const [isScanning, setIsScanning] = useState(false);
+  
+  const handleScan = async () => {
+    setIsScanning(true);
+    try {
+      const response = await fetch('/api/stock/scan');
+      const result = await response.json();
+      
+      if (result.success && result.data) {
+        const { stocks, note } = result.data;
+        
+        // 将扫描结果添加到观察池
+        let addedCount = 0;
+        for (const stock of stocks) {
+          // 检查是否已存在
+          const exists = watchlist.some(w => w.stockCode === stock.code);
+          if (!exists && stock.meetsRules) {
+            addToWatchlist({
+              stockCode: stock.code,
+              stockName: stock.name,
+              sector: '待分类',
+              currentPrice: stock.price,
+              changePercent: stock.changePercent,
+              priceVsMA5: 0,
+              priceVsMA20: 0,
+              volumeRatio: 1,
+              roe: 0,
+              debtRatio: 0,
+              pePercentile: 0,
+              meetsRules: true,
+              isSystemPick: true,
+              isFavorite: false,
+              strategyId: currentFilterStrategyId,
+            });
+            addedCount++;
+          }
+        }
+        
+        toast.success(`扫描完成！发现 ${stocks.length} 只股票，新增 ${addedCount} 只到观察池`, {
+          description: note,
+        });
+      } else {
+        toast.error(result.error || '扫描失败');
+      }
+    } catch (error) {
+      toast.error('扫描失败，请稍后重试');
+    } finally {
+      setIsScanning(false);
+    }
   };
 
   return (
@@ -155,47 +220,127 @@ const favoriteCount = useMemo(() => {
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="outline" onClick={handleScan}>
-              <RefreshCw className="mr-2 h-4 w-4" /> 立即扫描
+<Button variant="outline" onClick={handleScan} disabled={isScanning}>
+              {isScanning ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <RefreshCw className="mr-2 h-4 w-4" />
+              )}
+              {isScanning ? '扫描中...' : '立即扫描'}
             </Button>
-            <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
+            <Dialog open={isAddDialogOpen} onOpenChange={(open) => {
+              setIsAddDialogOpen(open);
+              if (!open) {
+                setStockSearchKeyword('');
+                setSelectedSearchResult(null);
+                clearSearch();
+              }
+            }}>
               <DialogTrigger asChild>
                 <Button>
-                  <Plus className="mr-2 h-4 w-4" /> 手动添加
+                  <Plus className="mr-2 h-4 w-4" /> 添加股票
                 </Button>
               </DialogTrigger>
-              <DialogContent>
+              <DialogContent className="sm:max-w-[500px]">
                 <DialogHeader>
                   <DialogTitle>添加股票到观察池</DialogTitle>
                   <DialogDescription>
-                    手动添加的股票将标记为"非系统机会"
+                    搜索股票代码或名称，获取实时行情后加入观察池
                   </DialogDescription>
                 </DialogHeader>
                 <div className="space-y-4 py-4">
+                  {/* 股票搜索 */}
                   <div className="space-y-2">
-                    <label className="text-sm font-medium">股票代码</label>
-                    <Input
-                      placeholder="例如：600519"
-                      value={newStock.stockCode}
-                      onChange={(e) =>
-                        setNewStock({ ...newStock, stockCode: e.target.value })
-                      }
-                    />
+                    <label className="text-sm font-medium">搜索股票</label>
+                    <div className="relative">
+                      <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                      <Input
+                        placeholder="输入股票代码或名称，如 600519 或 茅台"
+                        value={stockSearchKeyword}
+                        onChange={(e) => {
+                          setStockSearchKeyword(e.target.value);
+                          performSearch(e.target.value);
+                          setSelectedSearchResult(null);
+                        }}
+                        className="pl-10"
+                      />
+                      {isSearching && (
+                        <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-muted-foreground" />
+                      )}
+                    </div>
+                    
+                    {/* 搜索结果列表 */}
+                    {searchResults.length > 0 && !selectedSearchResult && (
+                      <div className="max-h-48 overflow-y-auto rounded-md border">
+                        {searchResults.map((result) => (
+                          <div
+                            key={result.code}
+                            className="flex cursor-pointer items-center justify-between px-3 py-2 hover:bg-muted"
+                            onClick={() => {
+                              setSelectedSearchResult(result);
+                              setStockSearchKeyword(`${result.code} ${result.name}`);
+                            }}
+                          >
+                            <div>
+                              <span className="font-medium">{result.code}</span>
+                              <span className="ml-2 text-muted-foreground">{result.name}</span>
+                            </div>
+                            <Badge variant="outline" className="text-xs">
+                              {result.market === 'sh' ? '沪' : result.market === 'sz' ? '深' : '北'}
+                            </Badge>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
+                  
+                  {/* 选中股票的实时行情 */}
+                  {selectedSearchResult && (
+                    <Card className="bg-muted/50">
+                      <CardContent className="p-4">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <p className="font-medium">{selectedSearchResult.name}</p>
+                            <p className="text-sm text-muted-foreground">{selectedSearchResult.code}</p>
+                          </div>
+                          {quoteLoading ? (
+                            <Loader2 className="h-5 w-5 animate-spin" />
+                          ) : selectedQuote ? (
+                            <div className="text-right">
+                              <p className="text-lg font-semibold">¥{selectedQuote.price.toFixed(2)}</p>
+                              <p className={`text-sm ${selectedQuote.changePercent >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                                {selectedQuote.changePercent >= 0 ? '+' : ''}{selectedQuote.changePercent.toFixed(2)}%
+                              </p>
+                            </div>
+                          ) : (
+                            <span className="text-sm text-muted-foreground">获取行情中...</span>
+                          )}
+                        </div>
+                        {selectedQuote && (
+                          <div className="mt-3 grid grid-cols-3 gap-2 text-xs text-muted-foreground">
+                            <div>
+                              <span>开盘</span>
+                              <p className="font-medium text-foreground">¥{selectedQuote.open.toFixed(2)}</p>
+                            </div>
+                            <div>
+                              <span>最高</span>
+                              <p className="font-medium text-foreground">¥{selectedQuote.high.toFixed(2)}</p>
+                            </div>
+                            <div>
+                              <span>最低</span>
+                              <p className="font-medium text-foreground">¥{selectedQuote.low.toFixed(2)}</p>
+                            </div>
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+                  )}
+                  
+                  {/* 备注（可选） */}
                   <div className="space-y-2">
-                    <label className="text-sm font-medium">股票名称</label>
+                    <label className="text-sm font-medium">所属行业（可选）</label>
                     <Input
-                      placeholder="例如：贵州茅台"
-                      value={newStock.stockName}
-                      onChange={(e) =>
-                        setNewStock({ ...newStock, stockName: e.target.value })
-                      }
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium">所属行业</label>
-                    <Input
-                      placeholder="例如：白酒"
+                      placeholder="例如：白酒、新能源"
                       value={newStock.sector}
                       onChange={(e) =>
                         setNewStock({ ...newStock, sector: e.target.value })
@@ -204,10 +349,47 @@ const favoriteCount = useMemo(() => {
                   </div>
                 </div>
                 <DialogFooter>
-                  <Button variant="outline" onClick={() => setIsAddDialogOpen(false)}>
+                  <Button variant="outline" onClick={() => {
+                    setIsAddDialogOpen(false);
+                    setStockSearchKeyword('');
+                    setSelectedSearchResult(null);
+                    clearSearch();
+                  }}>
                     取消
                   </Button>
-                  <Button onClick={handleAddStock}>添加</Button>
+                  <Button 
+                    onClick={() => {
+                      if (selectedSearchResult && selectedQuote) {
+                        addToWatchlist({
+                          stockCode: selectedSearchResult.code,
+                          stockName: selectedSearchResult.name,
+                          sector: newStock.sector || '未分类',
+                          currentPrice: selectedQuote.price,
+                          changePercent: selectedQuote.changePercent,
+                          priceVsMA5: 0,
+                          priceVsMA20: 0,
+                          volumeRatio: 1,
+                          roe: 0,
+                          debtRatio: 0,
+                          pePercentile: 0,
+                          meetsRules: false,
+                          isSystemPick: false,
+                          isFavorite: false,
+                        });
+                        toast.success(`已添加 ${selectedSearchResult.name} 到观察池`);
+                        setIsAddDialogOpen(false);
+                        setStockSearchKeyword('');
+                        setSelectedSearchResult(null);
+                        setNewStock({ stockCode: '', stockName: '', sector: '' });
+                        clearSearch();
+                      } else {
+                        toast.error('请先搜索并选择一只股票');
+                      }
+                    }}
+                    disabled={!selectedSearchResult || !selectedQuote}
+                  >
+                    添加到观察池
+                  </Button>
                 </DialogFooter>
               </DialogContent>
             </Dialog>

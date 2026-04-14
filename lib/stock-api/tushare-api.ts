@@ -1,0 +1,231 @@
+// Tushare Pro API封装
+// 用于获取历史K线数据、财务数据等
+
+import type { DailyKLine, ApiResponse, StockInfo } from './types';
+
+const TUSHARE_API_URL = 'http://api.tushare.pro';
+
+// Tushare API请求
+async function tushareRequest<T>(
+  apiName: string,
+  params: Record<string, unknown>,
+  fields?: string
+): Promise<ApiResponse<T>> {
+  const token = process.env.TUSHARE_TOKEN;
+  
+  if (!token) {
+    // 如果没有配置Token，返回模拟数据提示
+    return {
+      success: false,
+      error: 'TUSHARE_TOKEN 未配置，请在环境变量中设置',
+      timestamp: Date.now(),
+    };
+  }
+  
+  try {
+    const response = await fetch(TUSHARE_API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        api_name: apiName,
+        token,
+        params,
+        fields,
+      }),
+    });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP error: ${response.status}`);
+    }
+    
+    const result = await response.json();
+    
+    if (result.code !== 0) {
+      return {
+        success: false,
+        error: result.msg || 'Tushare API错误',
+        timestamp: Date.now(),
+      };
+    }
+    
+    return {
+      success: true,
+      data: result.data as T,
+      timestamp: Date.now(),
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Tushare请求失败',
+      timestamp: Date.now(),
+    };
+  }
+}
+
+// 转换股票代码格式 (600519 -> 600519.SH)
+function toTushareCode(code: string): string {
+  const cleanCode = code.replace(/^(sh|sz|bj)/i, '');
+  
+  if (cleanCode.startsWith('6')) {
+    return `${cleanCode}.SH`;
+  } else if (cleanCode.startsWith('0') || cleanCode.startsWith('3')) {
+    return `${cleanCode}.SZ`;
+  } else if (cleanCode.startsWith('4') || cleanCode.startsWith('8')) {
+    return `${cleanCode}.BJ`;
+  }
+  
+  return cleanCode;
+}
+
+// 获取日K线数据
+export async function getDailyKLine(
+  code: string,
+  startDate?: string,
+  endDate?: string,
+  limit: number = 120
+): Promise<ApiResponse<DailyKLine[]>> {
+  const tsCode = toTushareCode(code);
+  
+  // 默认获取最近120个交易日
+  const params: Record<string, unknown> = {
+    ts_code: tsCode,
+    adj: 'qfq', // 前复权
+  };
+  
+  if (startDate) params.start_date = startDate.replace(/-/g, '');
+  if (endDate) params.end_date = endDate.replace(/-/g, '');
+  
+  const result = await tushareRequest<{
+    fields: string[];
+    items: (string | number)[][];
+  }>('daily', params, 'trade_date,open,high,low,close,vol,amount,pct_chg');
+  
+  if (!result.success || !result.data) {
+    return {
+      success: false,
+      error: result.error,
+      timestamp: Date.now(),
+    };
+  }
+  
+  // 转换数据格式
+  const klines: DailyKLine[] = result.data.items
+    .slice(0, limit)
+    .map((item) => ({
+      date: String(item[0]).replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3'),
+      open: Number(item[1]) || 0,
+      high: Number(item[2]) || 0,
+      low: Number(item[3]) || 0,
+      close: Number(item[4]) || 0,
+      volume: Number(item[5]) || 0,
+      amount: Number(item[6]) || 0,
+      changePercent: Number(item[7]) || 0,
+    }))
+    .reverse(); // 按日期升序排列
+  
+  return {
+    success: true,
+    data: klines,
+    timestamp: Date.now(),
+  };
+}
+
+// 获取股票基本信息
+export async function getStockBasic(code?: string): Promise<ApiResponse<StockInfo[]>> {
+  const params: Record<string, unknown> = {
+    list_status: 'L', // 上市状态
+  };
+  
+  if (code) {
+    params.ts_code = toTushareCode(code);
+  }
+  
+  const result = await tushareRequest<{
+    fields: string[];
+    items: (string | number)[][];
+  }>('stock_basic', params, 'ts_code,symbol,name,area,industry,list_date,market');
+  
+  if (!result.success || !result.data) {
+    return {
+      success: false,
+      error: result.error,
+      timestamp: Date.now(),
+    };
+  }
+  
+  const stocks: StockInfo[] = result.data.items.map((item) => {
+    const tsCode = String(item[0]);
+    const market = tsCode.endsWith('.SH') ? 'sh' : 
+                   tsCode.endsWith('.SZ') ? 'sz' : 'bj';
+    
+    return {
+      code: String(item[1]),
+      symbol: market + String(item[1]),
+      name: String(item[2]),
+      market: market as 'sh' | 'sz' | 'bj',
+      industry: String(item[4]) || '未知',
+      listDate: String(item[5]),
+    };
+  });
+  
+  return {
+    success: true,
+    data: stocks,
+    timestamp: Date.now(),
+  };
+}
+
+// 获取财务指标
+export async function getFinanceIndicators(code: string): Promise<ApiResponse<{
+  roe: number;
+  debtRatio: number;
+  pe: number;
+  pb: number;
+  eps: number;
+  bps: number;
+}>> {
+  const tsCode = toTushareCode(code);
+  
+  const result = await tushareRequest<{
+    fields: string[];
+    items: (string | number)[][];
+  }>('fina_indicator', { ts_code: tsCode, limit: 1 }, 'roe,debt_to_assets,eps,bps');
+  
+  if (!result.success || !result.data || result.data.items.length === 0) {
+    // 返回默认值
+    return {
+      success: true,
+      data: {
+        roe: 0,
+        debtRatio: 0,
+        pe: 0,
+        pb: 0,
+        eps: 0,
+        bps: 0,
+      },
+      timestamp: Date.now(),
+    };
+  }
+  
+  const item = result.data.items[0];
+  
+  return {
+    success: true,
+    data: {
+      roe: Number(item[0]) || 0,
+      debtRatio: Number(item[1]) || 0,
+      pe: 0, // 需要单独计算
+      pb: 0, // 需要单独计算
+      eps: Number(item[2]) || 0,
+      bps: Number(item[3]) || 0,
+    },
+    timestamp: Date.now(),
+  };
+}
+
+// 检查Tushare Token是否配置
+export function isTushareConfigured(): boolean {
+  return !!process.env.TUSHARE_TOKEN;
+}
