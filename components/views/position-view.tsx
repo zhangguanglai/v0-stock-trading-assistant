@@ -82,6 +82,15 @@ import { useRealtimeQuotes } from '@/hooks/use-realtime-quotes';
 import { toast } from 'sonner';
 import type { Position } from '@/lib/types';
 
+// 买入信号客户端缓存（5分钟TTL）
+interface BuySignalCache {
+  data: any;
+  timestamp: number;
+}
+
+const buySignalCache = new Map<string, BuySignalCache>();
+const CACHE_TTL = 5 * 60 * 1000; // 5分钟
+
 export function PositionView() {
   const {
     positions,
@@ -493,6 +502,79 @@ const checkStrategyMatch = async (stockCode: string) => {
 
     const buyRules = strategy.buyRules;
 
+    // 检查客户端缓存（5分钟内不重复请求）
+    const cacheKey = `${stockCode}_${activeStrategyId || ''}`;
+    const cached = buySignalCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+      // 使用缓存数据
+      const data = cached.data.indicators || {};
+      const indicators = data.indicators || null;
+      const buySignal = cached.data.buySignal || null;
+      
+      // 直接从缓存构建结果
+      if (!buySignal || !buySignal.conditions) {
+        setStrategyCheck({
+          passed: false,
+          message: '缓存数据不完整',
+          matchedRules: 0,
+          totalRules: 4,
+          ruleDetails: [
+            { name: '均线多头排列', description: 'MA5>MA10>MA20', passed: false, status: 'fail', detail: '无数据' },
+            { name: 'MACD金叉', description: 'DIF上穿DEA且DIF>0', passed: false, status: 'fail', detail: '无数据' },
+            { name: 'K线确认', description: '阳线且收盘价站上MA5', passed: false, status: 'fail', detail: '无数据' },
+            { name: '成交量确认', description: '当日量>20日均量×1.2', passed: false, status: 'fail', detail: '无数据' },
+          ],
+        });
+        return;
+      }
+
+      const maCondition = buySignal.conditions.trendAlignment;
+      const macdCondition = buySignal.conditions.macdGoldenCross;
+      const candleCondition = buySignal.conditions.candleConfirm;
+      const volumeCondition = buySignal.conditions.volumeConfirm;
+
+      const ruleDetails = [
+        {
+          name: '均线多头排列',
+          description: `MA5>MA10>MA20: ${indicators?.ma5 ? indicators.ma5.toFixed(2) : '?'} / ${indicators?.ma10 ? indicators.ma10.toFixed(2) : '?'} / ${indicators?.ma20 ? indicators.ma20.toFixed(2) : '?'}`,
+          passed: maCondition?.pass || false,
+          status: maCondition?.pass ? 'pass' : 'fail',
+          detail: maCondition?.pass ? '通过' : '未通过',
+        },
+        {
+          name: 'MACD金叉',
+          description: `DIF=${indicators?.macd?.dif ? indicators.macd.dif.toFixed(3) : '?'}, DEA=${indicators?.macd?.dea ? indicators.macd.dea.toFixed(3) : '?'}`,
+          passed: macdCondition?.pass || false,
+          status: macdCondition?.pass ? 'pass' : 'fail',
+          detail: macdCondition?.pass ? '通过' : '未通过',
+        },
+        {
+          name: 'K线确认',
+          description: `收盘价=${indicators?.close ? indicators.close.toFixed(2) : '?'}, 开盘价=${indicators?.open ? indicators.open.toFixed(2) : '?'}`,
+          passed: candleCondition?.pass || false,
+          status: candleCondition?.pass ? 'pass' : 'fail',
+          detail: candleCondition?.pass ? '通过' : '未通过',
+        },
+        {
+          name: '成交量确认',
+          description: `量比=${indicators?.volumeRatio ? indicators.volumeRatio.toFixed(2) : '?'}`,
+          passed: volumeCondition?.pass || false,
+          status: volumeCondition?.pass ? 'pass' : 'fail',
+          detail: volumeCondition?.pass ? '通过' : '未通过',
+        },
+      ];
+
+      const totalRules = ruleDetails.length;
+      const matchedRules = ruleDetails.filter(r => r.passed).length;
+      const passed = buySignal.trigger;
+      const message = passed
+        ? `策略匹配度良好，满足 ${matchedRules}/${totalRules} 项买入规则`
+        : `策略匹配度较低，仅满足 ${matchedRules}/${totalRules} 项买入规则`;
+
+      setStrategyCheck({ passed, message, matchedRules, totalRules, ruleDetails });
+      return;
+    }
+
     try {
       setStockSearchLoading(true);
 
@@ -536,13 +618,31 @@ const checkStrategyMatch = async (stockCode: string) => {
       const data = indicatorsResult?.success ? indicatorsResult.data : {};
       const indicators = data.indicators || null;
       const buySignal = buySignalResult?.success ? buySignalResult.data : null;
-      const signals = buySignal?.conditions || [];
+      
+      // If buy signal data is not available, show error
+      if (!buySignal || !buySignal.conditions) {
+        setStrategyCheck({
+          passed: false,
+          message: buySignalResult?.error || '买入信号检测失败',
+          matchedRules: 0,
+          totalRules: 4,
+          ruleDetails: [
+            { name: '均线多头排列', description: 'MA5>MA10>MA20', passed: false, status: 'fail', detail: '无数据' },
+            { name: 'MACD金叉', description: 'DIF上穿DEA且DIF>0', passed: false, status: 'fail', detail: '无数据' },
+            { name: 'K线确认', description: '阳线且收盘价站上MA5', passed: false, status: 'fail', detail: '无数据' },
+            { name: '成交量确认', description: '当日量>20日均量×1.2', passed: false, status: 'fail', detail: '无数据' },
+          ],
+        });
+        return;
+      }
+      
+      const signals = buySignal.conditions || [];
       
       // 构建规则详情（统一名称和描述）
-      const maCondition = buySignal.conditions?.trendAlignment;
-      const macdCondition = buySignal.conditions?.macdGoldenCross;
-      const candleCondition = buySignal.conditions?.candleConfirm;
-      const volumeCondition = buySignal.conditions?.volumeConfirm;
+      const maCondition = buySignal.conditions.trendAlignment;
+      const macdCondition = buySignal.conditions.macdGoldenCross;
+      const candleCondition = buySignal.conditions.candleConfirm;
+      const volumeCondition = buySignal.conditions.volumeConfirm;
       
       const ruleDetails = [
         {
@@ -561,10 +661,10 @@ const checkStrategyMatch = async (stockCode: string) => {
         },
         {
           name: 'K线确认',
-          description: `收盘价=${indicators?.close ? indicators.close.toFixed(2) : '?'}, 开盘价=${indicators?.open ? indicators.open.toFixed(2) : '?'}`,
+          description: buySignal?.actualClose ? `${buySignal.actualClose.toFixed(2)} / ${buySignal.actualOpen.toFixed(2)}` : (candleCondition?.value || '?'),
           passed: candleCondition?.pass || false,
           status: candleCondition?.pass ? 'pass' : 'fail',
-          detail: candleCondition?.pass ? '通过' : (indicators?.close && indicators?.open ? (indicators.close > indicators.open ? '阳线但未站上MA5' : '非阳线') : '数据不足'),
+          detail: candleCondition?.pass ? '通过' : (candleCondition?.value || '数据不足'),
         },
         {
           name: '成交量确认',
@@ -597,6 +697,12 @@ const checkStrategyMatch = async (stockCode: string) => {
         matchedRules,
         totalRules,
         ruleDetails,
+      });
+
+      // 缓存结果（5分钟）
+      buySignalCache.set(cacheKey, {
+        data: { indicators: data, buySignal },
+        timestamp: Date.now(),
       });
     } catch (error) {
       console.error('检查策略匹配时出错:', error);
@@ -2129,33 +2235,33 @@ const checkStrategyMatch = async (stockCode: string) => {
                 </div>
                 
                 {/* 1. 卖出策略检查 */}
-                <div className={`rounded-md border p-4 ${sellStrategyCheck.passed ? 'border-green-500 bg-green-50' : 'border-yellow-500 bg-yellow-50'}`}>
+                <div className={`rounded-md border p-4 ${sellStrategyCheck.passed ? 'border-green-500 bg-green-950' : 'border-yellow-500 bg-yellow-950'}`}>
                   <div className="flex items-center gap-2 mb-2">
-                    {sellStrategyCheck.passed && <Check className="h-4 w-4 text-green-500" />}
-                    {!sellStrategyCheck.passed && <AlertTriangle className="h-4 w-4 text-yellow-500" />}
-                    <span className="font-medium">卖出策略检查</span>
+                    {sellStrategyCheck.passed && <Check className="h-4 w-4 text-green-400" />}
+                    {!sellStrategyCheck.passed && <AlertTriangle className="h-4 w-4 text-yellow-400" />}
+                    <span className={`font-medium ${sellStrategyCheck.passed ? 'text-green-100' : 'text-yellow-100'}`}>卖出策略检查</span>
                   </div>
-                  <p className="text-sm mb-3">{sellStrategyCheck.message}</p>
+                  <p className="text-sm mb-3 text-gray-300">{sellStrategyCheck.message}</p>
                   {sellStrategyCheck.totalRules > 0 && (
                     <div className="space-y-3">
-                      <Progress 
-                        value={(sellStrategyCheck.matchedRules / sellStrategyCheck.totalRules) * 100} 
+                      <Progress
+                        value={(sellStrategyCheck.matchedRules / sellStrategyCheck.totalRules) * 100}
                         className="h-2"
                       />
-                      <p className="text-xs text-muted-foreground">
+                      <p className="text-xs text-gray-400">
                         匹配度: {Math.round((sellStrategyCheck.matchedRules / sellStrategyCheck.totalRules) * 100)}%
                       </p>
-                      
+
                       {/* 详细规则匹配情况 */}
                       <div className="mt-4 space-y-2">
-                        <h4 className="text-sm font-medium">详细规则匹配情况:</h4>
+                        <h4 className="text-sm font-medium text-gray-200">详细规则匹配情况:</h4>
                         {sellStrategyCheck.ruleDetails?.map((rule, index) => (
-                          <div key={index} className="flex items-center justify-between p-2 rounded bg-white/80">
+                          <div key={index} className="flex items-center justify-between p-2 rounded bg-black/30">
                             <div>
-                              <div className="text-sm font-medium">{rule.name}</div>
-                              <div className="text-xs text-muted-foreground">{rule.description}</div>
+                              <div className="text-sm font-medium text-gray-200">{rule.name}</div>
+                              <div className="text-xs text-gray-400">{rule.description}</div>
                             </div>
-                            <div className={`text-sm font-medium ${rule.passed ? 'text-green-500' : 'text-red-500'}`}>
+                            <div className={`text-sm font-medium ${rule.passed ? 'text-green-400' : 'text-red-400'}`}>
                               {rule.passed ? '✓ 通过' : '✗ 未通过'}
                             </div>
                           </div>

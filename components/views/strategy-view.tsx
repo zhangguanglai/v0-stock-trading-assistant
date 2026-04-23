@@ -554,9 +554,9 @@ export function StrategyView() {
                     </div>
                     <div className="space-y-2">
                       <div className="flex items-center justify-between">
-                        <Label>PE历史分位</Label>
+                        <Label>PE</Label>
                         <span className="text-sm text-muted-foreground">
-                          &lt; {activeStrategy.stockRules.maxPEPercentile}%
+                          &lt; {activeStrategy.stockRules.maxPEPercentile}
                         </span>
                       </div>
                       <Slider

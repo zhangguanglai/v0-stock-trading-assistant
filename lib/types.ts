@@ -303,6 +303,7 @@ export interface ScanFunnel {
   scannedAt: string;   // ISO时间
   steps: ScanFunnelStep[];
   totalResult: number; // 最终结果数
+  error?: string;      // 扫描错误信息（如果有）
 }
 
 // 回测相关类型

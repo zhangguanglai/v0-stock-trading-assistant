@@ -427,6 +427,20 @@ export async function updatePosition(id: string, updates: Partial<Position>): Pr
   return true
 }
 
+export async function deletePosition(id: string): Promise<boolean> {
+  const { error } = await supabase
+    .from('positions')
+    .delete()
+    .eq('id', id)
+
+  if (error) {
+    console.error('Error deleting position:', error)
+    return false
+  }
+
+  return true
+}
+
 // Trade Operations
 export async function getTrades(): Promise<Trade[]> {
   const { data: { user } } = await supabase.auth.getUser()

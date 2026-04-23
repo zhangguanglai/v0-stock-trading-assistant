@@ -11,8 +11,8 @@ import type {
   DashboardData,
   PerformanceStats,
   ScanFunnel,
+  TradingCycle,
 } from './types';
-import { readAllStrategies, readAllPositions, readAllStockPools, readAllAlerts, readAllTrades, createStrategy, updateStrategy as dbUpdate_strategy, deleteStrategy as dbDeleteStrategy, getStrategies } from '@/lib/db';
 
 // 生成唯一ID
 const generateId = () => Math.random().toString(36).substring(2, 15);
@@ -194,12 +194,60 @@ export const useStockStore = create<StockStore>()(
           alertTriggered: false,
           trailingStopEnabled: false,
         };
+        
+        // 同步到Supabase数据库
+        const saveToDb = async () => {
+          try {
+            const { createPosition: dbCreatePosition } = await import('@/lib/db');
+            await dbCreatePosition({
+              strategyId: position.strategyId,
+              stockCode: position.stockCode,
+              stockName: position.stockName,
+              entryPrice: newPosition.buyPrice || newPosition.entryPrice,
+              currentPrice: position.currentPrice || newPosition.buyPrice || newPosition.entryPrice,
+              quantity: newPosition.shares || newPosition.quantity,
+              stopLossPrice: position.stopLossPrice,
+              takeProfitPrice: position.takeProfitPrice,
+              trailingStopPercent: position.trailingStopPercent,
+              status: position.status || 'open',
+              entryDate: position.entryDate || new Date().toISOString().slice(0, 10),
+              notes: position.notes,
+            });
+          } catch (err) {
+            console.error('同步持仓到数据库失败:', err);
+          }
+        };
+        saveToDb();
+        
         set((state) => ({
           positions: [...state.positions, newPosition],
         }));
       },
       
       updatePosition: (id, updates) => {
+        // 同步到Supabase数据库
+        const saveToDb = async () => {
+          try {
+            const { updatePosition: dbUpdatePosition } = await import('@/lib/db');
+            const dbUpdates: any = {};
+            if (updates.currentPrice !== undefined) dbUpdates.currentPrice = updates.currentPrice;
+            if (updates.stopLossPrice !== undefined) dbUpdates.stopLossPrice = updates.stopLossPrice;
+            if (updates.takeProfitPrice !== undefined) dbUpdates.takeProfitPrice = updates.takeProfitPrice;
+            if (updates.trailingStopPercent !== undefined) dbUpdates.trailingStopPercent = updates.trailingStopPercent;
+            if (updates.status !== undefined) dbUpdates.status = updates.status;
+            if (updates.exitPrice !== undefined) dbUpdates.exitPrice = updates.exitPrice;
+            if (updates.pnl !== undefined) dbUpdates.pnl = updates.pnl;
+            if (updates.pnlPercent !== undefined) dbUpdates.pnlPercent = updates.pnlPercent;
+            if (updates.notes !== undefined) dbUpdates.notes = updates.notes;
+            if (Object.keys(dbUpdates).length > 0) {
+              await dbUpdatePosition(id, dbUpdates);
+            }
+          } catch (err) {
+            console.error('同步持仓更新到数据库失败:', err);
+          }
+        };
+        saveToDb();
+        
         set((state) => ({
           positions: state.positions.map((p) =>
             p.id === id ? { ...p, ...updates } : p
@@ -208,6 +256,17 @@ export const useStockStore = create<StockStore>()(
       },
       
       removePosition: (id) => {
+        // 同步到Supabase数据库
+        const deleteFromDb = async () => {
+          try {
+            const { deletePosition: dbDeletePosition } = await import('@/lib/db');
+            await dbDeletePosition(id);
+          } catch (err) {
+            console.error('从数据库删除持仓失败:', err);
+          }
+        };
+        deleteFromDb();
+        
         set((state) => ({
           positions: state.positions.filter((p) => p.id !== id),
         }));
@@ -253,6 +312,33 @@ export const useStockStore = create<StockStore>()(
           ...record,
           id: generateId(),
         };
+        
+        // 同步到Supabase数据库
+        const saveToDb = async () => {
+          try {
+            const { createTrade: dbCreateTrade } = await import('@/lib/db');
+            await dbCreateTrade({
+              strategyId: record.strategyId || '',
+              stockCode: record.stockCode,
+              stockName: record.stockName,
+              tradeType: record.type,
+              price: record.price,
+              quantity: record.shares,
+              totalAmount: record.amount,
+              commission: record.commission || 0,
+              tradeDate: (record.date instanceof Date ? record.date : new Date(record.date)).toISOString(),
+              reason: record.triggerReason || '',
+              emotionState: record.emotionState || record.emotion,
+              followedRules: record.followedRules,
+              ruleViolations: record.ruleViolations,
+              positionId: record.positionId,
+            });
+          } catch (err) {
+            console.error('同步交易记录到数据库失败:', err);
+          }
+        };
+        saveToDb();
+        
         set((state) => ({
           tradeRecords: [...state.tradeRecords, newRecord],
         }));
@@ -270,12 +356,47 @@ export const useStockStore = create<StockStore>()(
         if (!newAlert.strategyId && get().activeStrategyId) {
           newAlert.strategyId = get().activeStrategyId;
         }
+        
+        // 同步到Supabase数据库
+        const saveToDb = async () => {
+          try {
+            const { createAlert: dbCreateAlert } = await import('@/lib/db');
+            await dbCreateAlert({
+              strategyId: newAlert.strategyId,
+              positionId: newAlert.positionId,
+              stockCode: newAlert.stockCode,
+              stockName: newAlert.stockName,
+              alertType: newAlert.alertType,
+              triggerPrice: newAlert.triggerPrice,
+              currentPrice: newAlert.currentPrice,
+              message: newAlert.message,
+              isRead: false,
+              isTriggered: newAlert.isTriggered || false,
+              triggeredAt: newAlert.triggeredAt,
+            });
+          } catch (err) {
+            console.error('同步警报到数据库失败:', err);
+          }
+        };
+        saveToDb();
+        
         set((state) => ({
           alerts: [newAlert, ...state.alerts].slice(0, 50), // 保留最近50条
         }));
       },
       
       markAlertRead: (id) => {
+        // 同步到Supabase数据库
+        const saveToDb = async () => {
+          try {
+            const { markAlertAsRead: dbMarkAlertAsRead } = await import('@/lib/db');
+            await dbMarkAlertAsRead(id);
+          } catch (err) {
+            console.error('同步警报已读状态到数据库失败:', err);
+          }
+        };
+        saveToDb();
+        
         set((state) => ({
           alerts: state.alerts.map((a) =>
             a.id === id ? { ...a, read: true } : a
@@ -429,7 +550,14 @@ export const useStockStore = create<StockStore>()(
     }),
     {
       name: 'stock-investment-store',
-      // 处理Date序列化
+      version: 1,
+      migrate: (persistedState: unknown, version: number) => {
+        console.log(`[Store Migration] 检测到版本升级: v${version} -> v1`);
+        if (version === 0) {
+          console.log('[Store Migration] v0 -> v1: 兼容旧版本数据结构');
+        }
+        return persistedState as StockStore;
+      },
       partialize: (state) => ({
         strategies: state.strategies,
         activeStrategyId: state.activeStrategyId,
@@ -446,8 +574,13 @@ export const useStockStore = create<StockStore>()(
 // 初始化策略的hook - 从数据库加载
 export const initializeDefaultStrategy = async () => {
   try {
-    const { getStrategies: dbGetStrategies } = await import('@/lib/db');
-    const dbStrategies = await dbGetStrategies();
+    const { getStrategies: dbGetStrategies, getPositions: dbGetPositions, getTrades: dbGetTrades, getAlerts: dbGetAlerts } = await import('@/lib/db');
+    const [dbStrategies, dbPositions, dbTrades, dbAlerts] = await Promise.all([
+      dbGetStrategies(),
+      dbGetPositions(),
+      dbGetTrades(),
+      dbGetAlerts(),
+    ]);
     
     if (dbStrategies.length > 0) {
       // 从数据库加载所有策略，覆盖localStorage中的旧数据
@@ -496,16 +629,76 @@ export const initializeDefaultStrategy = async () => {
         },
       }));
       
-      // 覆盖store中的策略数据（优先使用数据库数据），同时保留其他数据
-      useStockStore.setState((state) => ({
+      // 将数据库Position类型映射为store使用的LegacyPosition格式
+      const mappedPositions = dbPositions.map(p => ({
+        id: p.id,
+        strategyId: p.strategyId,
+        stockCode: p.stockCode,
+        stockName: p.stockName,
+        buyPrice: p.entryPrice,
+        currentPrice: p.currentPrice || p.entryPrice,
+        shares: p.quantity,
+        buyDate: p.entryDate ? new Date(p.entryDate) : new Date(),
+        stopLossPrice: p.stopLossPrice || 0,
+        takeProfitPrice: p.takeProfitPrice || 0,
+        trailingStopEnabled: false,
+        highestPrice: p.currentPrice || p.entryPrice,
+        alertTriggered: false,
+        sector: (p as any).sector || '未知',
+        status: p.status,
+        entryPrice: p.entryPrice,
+        quantity: p.quantity,
+        entryDate: p.entryDate,
+        exitDate: p.exitDate,
+        exitPrice: p.exitPrice,
+        pnl: p.pnl,
+        pnlPercent: p.pnlPercent,
+        notes: p.notes,
+      }));
+      
+      // 将数据库Trade类型映射为TradeRecord格式
+      const mappedTrades = dbTrades.map(t => ({
+        id: t.id,
+        strategyId: t.strategyId || '',
+        stockCode: t.stockCode,
+        stockName: t.stockName,
+        type: t.tradeType as 'buy' | 'sell',
+        price: t.price,
+        shares: t.quantity,
+        amount: t.totalAmount,
+        date: new Date(t.tradeDate),
+        triggerReason: t.reason || '',
+        profit: (t as any).profit,
+        profitPercent: (t as any).profitPercent,
+        emotion: (t as any).emotionState,
+        notes: (t as any).notes,
+        positionId: (t as any).positionId,
+      }));
+      
+      // 将数据库Alert类型映射为store使用的Alert格式
+      const mappedAlerts = dbAlerts.map(a => ({
+        id: a.id,
+        strategyId: a.strategyId,
+        positionId: a.positionId,
+        stockCode: a.stockCode,
+        stockName: a.stockName,
+        alertType: a.alertType,
+        triggerPrice: a.triggerPrice,
+        currentPrice: a.currentPrice,
+        message: a.message,
+        read: a.isRead,
+        isTriggered: a.isTriggered,
+        triggeredAt: a.triggeredAt,
+        createdAt: a.createdAt ? new Date(a.createdAt) : new Date(),
+      }));
+      
+      // 覆盖store中的策略数据（优先使用数据库数据），同时加载其他数据
+      useStockStore.setState(() => ({
         strategies: loadedStrategies,
         activeStrategyId: loadedStrategies.find(s => s.status === 'active')?.id || loadedStrategies[0]?.id || null,
-        // 保留原有的持仓、交易记录等数据
-        positions: state.positions,
-        tradeRecords: state.tradeRecords,
-        alerts: state.alerts,
-        watchlist: state.watchlist,
-        scanFunnels: state.scanFunnels,
+        positions: mappedPositions,
+        tradeRecords: mappedTrades,
+        alerts: mappedAlerts,
       }));
     } else {
       // 数据库无策略，检查store中是否有（可能来自localStorage）

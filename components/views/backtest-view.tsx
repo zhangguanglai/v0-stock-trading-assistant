@@ -45,33 +45,42 @@ export function BacktestView() {
     
     setIsRunning(true);
     try {
-      // 模拟回测过程
-      await new Promise(resolve => setTimeout(resolve, 3000));
+      // 获取当前策略的规则
+      const strategy = strategies.find(s => s.id === params.strategyId);
+      if (!strategy) {
+        toast.error('策略不存在');
+        return;
+      }
       
-      // 生成模拟回测结果
-      const mockResult: BacktestResult = {
-        strategyId: params.strategyId,
-        strategyName: activeStrategy?.name || '策略',
-        startDate: params.startDate,
-        endDate: params.endDate,
-        initialCapital: params.initialCapital,
-        finalCapital: params.initialCapital * 1.25,
-        totalReturn: 25,
-        annualizedReturn: 12.25,
-        maxDrawdown: 15.5,
-        sharpeRatio: 1.8,
-        winRate: 65,
-        totalTrades: 50,
-        winningTrades: 32,
-        losingTrades: 18,
-        avgWin: 8.5,
-        avgLoss: 4.2,
-        profitFactor: 2.1,
-        trades: generateMockTrades(),
-        equityCurve: generateMockEquityCurve(),
+      // 转换策略规则为回测格式
+      const rules = {
+        maxMarketCap: strategy.moneyRules?.maxSingleStockPercent ? strategy.moneyRules.maxSingleStockPercent * 10 : undefined,
+        minMarketCap: strategy.moneyRules?.totalCapital ? strategy.moneyRules.totalCapital / 10000 : undefined,
+        minROE: strategy.stockRules?.minROE,
+        maxDebtRatio: strategy.stockRules?.maxDebtRatio,
+        minTurnoverRate: strategy.stockRules?.minTurnoverRate5D,
+        maxPE: strategy.stockRules?.maxPEPercentile,
+        minVolumeRatio: strategy.stockRules?.volumeRatio,
+        priceAboveMA5: strategy.buyRules?.ma5CrossMa20,
+        priceAboveMA20: strategy.buyRules?.ma5CrossMa20,
+        weeklyMACDGoldenCross: strategy.buyRules?.macdGoldenCross,
       };
       
-      setResult(mockResult);
+      // 调用真实回测API
+      const response = await fetch('/api/backtest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ params, rules }),
+      });
+      
+      const data = await response.json();
+      
+      if (!data.success) {
+        toast.error(data.error || '回测失败');
+        return;
+      }
+      
+      setResult(data.data);
       toast.success('回测完成');
     } catch (error) {
       console.error('回测失败:', error);

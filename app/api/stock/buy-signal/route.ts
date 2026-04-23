@@ -45,9 +45,9 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // 获取120日K线数据
-    const klineResult = await getDailyKLine(code, undefined, undefined, 120);
-    
+    // 获取120日K线数据（前复权，用于技术指标计算）
+    const klineResult = await getDailyKLine(code, undefined, undefined, 120, 'qfq');
+
     if (!klineResult.success || !klineResult.data) {
       return NextResponse.json({
         success: false,
@@ -62,8 +62,20 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    // 执行买入信号检测（传入策略规则）
-    const buySignal = detectBuySignal(klineResult.data, buyRuleConfig);
+    // 获取最新1日不复权K线（用于展示实际价格）
+    let actualPrice: { close: number; open: number } | undefined;
+    try {
+      const actualKlineResult = await getDailyKLine(code, undefined, undefined, 1, '');
+      if (actualKlineResult.success && actualKlineResult.data?.length > 0) {
+        const latest = actualKlineResult.data[actualKlineResult.data.length - 1];
+        actualPrice = { close: latest.close, open: latest.open };
+      }
+    } catch {
+      // 不复权数据获取失败时回退到前复权价格
+    }
+
+    // 执行买入信号检测（传入策略规则 + 实际展示价格）
+    const buySignal = detectBuySignal(klineResult.data, buyRuleConfig, actualPrice);
 
     return NextResponse.json({
       success: true,

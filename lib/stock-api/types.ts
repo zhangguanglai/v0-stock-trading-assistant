@@ -120,9 +120,11 @@ export interface BuySignal {
     candleConfirm: BuySignalCondition;    // K线确认
     volumeConfirm?: BuySignalCondition;   // 成交量确认
   };
-  suggestedPrice?: number;    // 建议买入价格
+  suggestedPrice?: number;    // 建议买入价格（前复权）
   stopLoss?: number;          // 止损价位
   description: string;        // 综合描述
+  actualClose?: number;       // 实际收盘价（不复权，用于展示）
+  actualOpen?: number;        // 实际开盘价（不复权，用于展示）
 }
 
 // 买入信号

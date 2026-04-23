@@ -4,8 +4,10 @@
 import type { DailyKLine, ApiResponse, StockInfo } from './types';
 
 const TUSHARE_API_URL = 'http://api.tushare.pro';
+const FETCH_TIMEOUT_MS = 15000;
+const MAX_RETRIES = 2;
 
-// Tushare API请求
+// Tushare API请求（带超时和重试）
 export async function tushareRequest<T>(
   apiName: string,
   params: Record<string, unknown>,
@@ -14,7 +16,6 @@ export async function tushareRequest<T>(
   const token = process.env.TUSHARE_TOKEN;
   
   if (!token) {
-    // 如果没有配置Token，返回模拟数据提示
     return {
       success: false,
       error: 'TUSHARE_TOKEN 未配置，请在环境变量中设置',
@@ -22,46 +23,50 @@ export async function tushareRequest<T>(
     };
   }
   
-  try {
-    const response = await fetch(TUSHARE_API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        api_name: apiName,
-        token,
-        params,
-        fields,
-      }),
-    });
-    
-    if (!response.ok) {
-      throw new Error(`HTTP error: ${response.status}`);
+  let lastError: Error | null = null;
+  
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+      
+      const response = await fetch(TUSHARE_API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify({ api_name: apiName, token, params, fields }),
+      });
+      
+      clearTimeout(timeoutId);
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      
+      const result = await response.json();
+      
+      if (result.code !== 0) {
+        return { success: false, error: result.msg || 'Tushare API错误', timestamp: Date.now() };
+      }
+      
+      return { success: true, data: result.data as T, timestamp: Date.now() };
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      const isAbort = lastError.name === 'AbortError';
+      const errMsg = isAbort ? '请求超时' : lastError.message;
+      
+      if (attempt < MAX_RETRIES) {
+        console.warn(`[Tushare] ${apiName} 第${attempt + 1}次失败 (${errMsg})，重试中...`);
+        await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+      }
     }
-    
-    const result = await response.json();
-    
-    if (result.code !== 0) {
-      return {
-        success: false,
-        error: result.msg || 'Tushare API错误',
-        timestamp: Date.now(),
-      };
-    }
-    
-    return {
-      success: true,
-      data: result.data as T,
-      timestamp: Date.now(),
-    };
-  } catch (error) {
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : 'Tushare请求失败',
-      timestamp: Date.now(),
-    };
   }
+  
+  return {
+    success: false,
+    error: lastError?.message || 'Tushare请求失败',
+    timestamp: Date.now(),
+  };
 }
 
 // 转换股票代码格式 (600519 -> 600519.SH)
@@ -84,16 +89,16 @@ export async function getDailyKLine(
   code: string,
   startDate?: string,
   endDate?: string,
-  limit: number = 120
+  limit: number = 120,
+  adj: 'qfq' | 'hfq' | '' = ''
 ): Promise<ApiResponse<DailyKLine[]>> {
   const tsCode = toTushareCode(code);
-  
-  // 默认获取最近120个交易日
+
   const params: Record<string, unknown> = {
     ts_code: tsCode,
-    adj: 'qfq', // 前复权
   };
-  
+
+  if (adj) params.adj = adj;
   if (startDate) params.start_date = startDate.replace(/-/g, '');
   if (endDate) params.end_date = endDate.replace(/-/g, '');
   
@@ -252,7 +257,40 @@ let allDailyBasicCache: {
   _version: string;
 } | null = null;
 
-const CACHE_TTL = 24 * 60 * 60 * 1000; // 24小时
+// 判断当前是否为交易时段
+export function isTradingHours(): boolean {
+  const now = new Date();
+  const day = now.getDay();
+  
+  if (day === 0 || day === 6) return false;
+  
+  const hour = now.getHours();
+  const minute = now.getMinutes();
+  const currentTime = hour * 100 + minute;
+  
+  return currentTime >= 915 && currentTime < 1505;
+}
+
+// 判断缓存是否过期（基于交易日而非固定24小时）
+function isCacheExpired(cacheTradeDate: string): boolean {
+  const now = new Date();
+  const cacheDate = new Date(cacheTradeDate.slice(0, 4) + '-' + cacheTradeDate.slice(4, 6) + '-' + cacheTradeDate.slice(6, 8));
+  
+  const currentTradeDate = getLatestTradeDateString(now);
+  
+  return cacheTradeDate !== currentTradeDate;
+}
+
+// 获取最近的交易日字符串 (YYYYMMDD)
+function getLatestTradeDateString(date: Date): string {
+  const d = new Date(date);
+  const day = d.getDay();
+  
+  if (day === 0) d.setDate(d.getDate() - 2);
+  else if (day === 6) d.setDate(d.getDate() - 1);
+  
+  return d.toISOString().slice(0, 10).replace(/-/g, '');
+}
 
 // 获取全市场每日基本面数据（不带ts_code，获取所有股票）
 // 5000积分支持，无总量限制
@@ -268,9 +306,11 @@ export async function getAllDailyBasic(): Promise<ApiResponse<{
   close: number;          // 收盘价
   changePercent: number;  // 涨跌幅
 }[]>> {
-  // 检查缓存是否有效（字段结构已变更，清空旧缓存）
-  const CACHE_VERSION = 'v2';
-  if (allDailyBasicCache && allDailyBasicCache._version === CACHE_VERSION && (Date.now() - allDailyBasicCache.timestamp) < CACHE_TTL) {
+  // 检查缓存是否有效（基于交易日判断）
+  const CACHE_VERSION = 'v4'; // 修复: daily_basic 应返回全市场 ~5000+ 只
+  if (allDailyBasicCache && 
+      allDailyBasicCache._version === CACHE_VERSION && 
+      !isCacheExpired(allDailyBasicCache.tradeDate)) {
     console.log(`[getAllDailyBasic] 使用缓存数据（${allDailyBasicCache.tradeDate}）`);
     return {
       success: true,
@@ -281,75 +321,79 @@ export async function getAllDailyBasic(): Promise<ApiResponse<{
 
   console.log('[getAllDailyBasic] 缓存未命中或已过期，请求Tushare API...');
 
+  // daily_basic 接口规则：ts_code 和 trade_date 二选一必选
+  // 不传 ts_code + 传 trade_date = 获取全市场当日数据（~5000+只）
   // 尝试最近5个交易日
   for (let daysBack = 0; daysBack < 5; daysBack++) {
     const tradeDate = new Date();
     tradeDate.setDate(tradeDate.getDate() - daysBack);
     const dateStr = tradeDate.toISOString().slice(0, 10).replace(/-/g, '');
 
-    // 不带ts_code获取全市场（5000积分支持），增加 close 和 pct_chg 字段
+    // 使用 bak_daily 接口获取数据（包含涨跌幅 pct_change）
     const result = await tushareRequest<{
       fields: string[];
       items: (string | number | null)[][];
-    }>('daily_basic', {
+    }>('bak_daily', {
       trade_date: dateStr,
-    }, 'ts_code,total_mv,circ_mv,pe,pb,turnover_rate,volume_ratio,close,pct_chg');
+    }, 'ts_code,name,close,pct_change,turnover_rate,volume_ratio,pe,pb,total_mv,circ_mv');
 
-    if (result.success && result.data) {
-      const itemCount = result.data.items ? result.data.items.length : 0;
+    if (result.success && result.data && result.data.items && result.data.items.length > 0) {
       const fields = result.data.fields || [];
-
-      if (itemCount > 100) {
-        // 根据fields数组动态解析
-        const getFieldIndex = (name: string) => fields.indexOf(name);
-        const tsIdx = getFieldIndex('ts_code');
-        const mvIdx = getFieldIndex('total_mv');
-        const circIdx = getFieldIndex('circ_mv');
-        const peIdx = getFieldIndex('pe');
-        const pbIdx = getFieldIndex('pb');
-        const trIdx = getFieldIndex('turnover_rate');
-        const vrIdx = getFieldIndex('volume_ratio');
-        const closeIdx = getFieldIndex('close');
-        const pctChgIdx = getFieldIndex('pct_chg');
-
-        const basicData = result.data.items.map((item) => {
-          const tsCode = String(item[tsIdx] || '');
-          const code = tsCode.split('.')[0];
-
-          return {
-            code,
-            marketCap: mvIdx >= 0 ? Number(item[mvIdx] || 0) / 10000 : 0,
-            circulatingCap: circIdx >= 0 ? Number(item[circIdx] || 0) / 10000 : 0,
-            pe: peIdx >= 0 ? Number(item[peIdx] || 0) : 0,
-            pb: pbIdx >= 0 ? Number(item[pbIdx] || 0) : 0,
-            turnoverRate: trIdx >= 0 ? Number(item[trIdx] || 0) : 0,
-            volumeRatio: vrIdx >= 0 ? Number(item[vrIdx] || 1) : 1,
-            close: closeIdx >= 0 ? Number(item[closeIdx] || 0) : 0,
-            changePercent: pctChgIdx >= 0 ? Number(item[pctChgIdx] || 0) : 0,
-          };
-        });
-
-        // 写入缓存
-        allDailyBasicCache = {
-          data: basicData,
-          timestamp: Date.now(),
-          tradeDate: dateStr,
-          _version: CACHE_VERSION,
-        };
-        console.log(`[getAllDailyBasic] 缓存已更新（${dateStr}，${basicData.length}只）`);
-
-        return {
-          success: true,
-          data: basicData,
-          timestamp: Date.now(),
-        };
+      console.log(`[getAllDailyBasic] bak_daily 返回字段: ${fields.join(',')}`);
+      const getFieldIndex = (name: string) => fields.indexOf(name);
+      const tsIdx = getFieldIndex('ts_code');
+      const nameIdx = getFieldIndex('name');
+      const closeIdx = getFieldIndex('close');
+      const pctChgIdx = getFieldIndex('pct_change');
+      const trIdx = getFieldIndex('turnover_rate');
+      const vrIdx = getFieldIndex('volume_ratio');
+      const peIdx = getFieldIndex('pe');
+      const pbIdx = getFieldIndex('pb');
+      const mvIdx = getFieldIndex('total_mv');
+      const circIdx = getFieldIndex('circ_mv');
+      
+      // 打印第一条数据用于调试
+      if (result.data.items.length > 0) {
+        const firstItem = result.data.items[0];
+        console.log(`[getAllDailyBasic] 第一条数据: ts_code=${firstItem[tsIdx]}, name=${firstItem[nameIdx]}, close=${firstItem[closeIdx]}, pct_change=${firstItem[pctChgIdx]}, total_mv=${firstItem[mvIdx]}`);
       }
+
+      const basicData = result.data.items.map((item) => {
+        const tsCode = String(item[tsIdx] || '');
+        const code = tsCode.split('.')[0];
+        return {
+          code,
+          name: nameIdx >= 0 ? String(item[nameIdx] || '') : '',
+          marketCap: mvIdx >= 0 ? Number(item[mvIdx] || 0) / 10000 : 0,
+          circulatingCap: circIdx >= 0 ? Number(item[circIdx] || 0) / 10000 : 0,
+          pe: peIdx >= 0 ? Number(item[peIdx] || 0) : 0,
+          pb: pbIdx >= 0 ? Number(item[pbIdx] || 0) : 0,
+          turnoverRate: trIdx >= 0 ? Number(item[trIdx] || 0) : 0,
+          volumeRatio: vrIdx >= 0 ? Number(item[vrIdx] || 1) : 1,
+          close: closeIdx >= 0 ? Number(item[closeIdx] || 0) : 0,
+          changePercent: pctChgIdx >= 0 ? Number(item[pctChgIdx] || 0) : 0,
+        };
+      });
+
+      allDailyBasicCache = {
+        data: basicData,
+        timestamp: Date.now(),
+        tradeDate: dateStr,
+        _version: CACHE_VERSION,
+      };
+      console.log(`[getAllDailyBasic] 缓存已更新（${dateStr}，${basicData.length}只）`);
+
+      return {
+        success: true,
+        data: basicData,
+        timestamp: Date.now(),
+      };
     }
   }
 
   return {
     success: false,
-    error: '获取全市场基本面数据失败，近5个交易日无数据',
+    error: '获取全市场基本面数据失败，近5个交易日返回数据均不足',
     timestamp: Date.now(),
   };
 }
@@ -648,23 +692,29 @@ export async function getConceptMembers(
   };
 }
 
-// 概念板块日行情缓存（1天有效期）
+// 概念板块日行情缓存（基于交易日）
 let conceptDailyCache: {
   data: Map<string, ConceptDaily>;  // key: tsCode -> ConceptDaily
   timestamp: number;
   tradeDate: string;
 } | null = null;
 
-const CONCEPT_CACHE_TTL = 24 * 60 * 60 * 1000; // 24小时
+// 股票所属概念缓存（基于交易日）
+// key: conCode (如 000001.SZ), value: 所属概念列表 [{tsCode, tsName}]
+let stockConceptsCache: {
+  data: Map<string, { tsCode: string; tsName: string }[]>;
+  timestamp: number;
+  tradeDate: string;
+} | null = null;
 
 // 获取概念板块当日日行情（6000积分）
 // 按交易日获取所有概念板块的涨跌幅
-// 内置1天缓存，每日仅需2次API调用
+// 内置缓存，基于交易日判断是否刷新
 export async function getConceptDaily(
   tradeDate?: string  // YYYYMMDD格式，默认最近交易日
 ): Promise<ApiResponse<ConceptDaily[]>> {
-  // 检查缓存
-  if (conceptDailyCache && (Date.now() - conceptDailyCache.timestamp) < CONCEPT_CACHE_TTL) {
+  // 检查缓存（基于交易日判断）
+  if (conceptDailyCache && !isCacheExpired(conceptDailyCache.tradeDate)) {
     console.log(`[getConceptDaily] 使用缓存数据（${conceptDailyCache.tradeDate}）`);
     return {
       success: true,
@@ -735,6 +785,95 @@ export async function getConceptDaily(
     error: '获取概念板块日行情失败，近5个交易日无数据',
     timestamp: Date.now(),
   };
+}
+
+// 获取个股所属概念（带交易日缓存）
+// 按股票代码反向查询所属概念板块，结果缓存至下一交易日
+export async function getStockConceptsWithCache(
+  code: string
+): Promise<{ tsCode: string; tsName: string }[]> {
+  // 检查缓存
+  if (stockConceptsCache && !isCacheExpired(stockConceptsCache.tradeDate)) {
+    const cached = stockConceptsCache.data.get(code);
+    if (cached) {
+      return cached;
+    }
+  }
+
+  // 初始化缓存
+  if (!stockConceptsCache || isCacheExpired(stockConceptsCache.tradeDate)) {
+    stockConceptsCache = {
+      data: new Map(),
+      timestamp: Date.now(),
+      tradeDate: getLatestTradeDateString(new Date()),
+    };
+  }
+
+  // 获取板块名称映射
+  const indexResult = await getConceptIndices('N');
+  const nameMap = new Map<string, string>();
+  if (indexResult.success && indexResult.data) {
+    indexResult.data.forEach(idx => nameMap.set(idx.tsCode, idx.name));
+  }
+
+  // 调用ths_member API（按股票代码查询）
+  const memberResult = await getConceptMembers(undefined, code);
+  const concepts: { tsCode: string; tsName: string }[] = [];
+  
+  if (memberResult.success && memberResult.data && memberResult.data.length > 0) {
+    const seenCodes = new Set<string>();
+    memberResult.data.forEach(m => {
+      if (!seenCodes.has(m.tsCode)) {
+        seenCodes.add(m.tsCode);
+        concepts.push({
+          tsCode: m.tsCode,
+          tsName: nameMap.get(m.tsCode) || m.tsCode,
+        });
+      }
+    });
+  }
+
+  // 写入缓存
+  stockConceptsCache.data.set(code, concepts);
+
+  return concepts;
+}
+
+// 批量获取股票所属概念（分批限流，带缓存）
+export async function batchGetStockConcepts(
+  codes: string[],
+  batchSize: number = 10,
+  delayMs: number = 200
+): Promise<Map<string, { tsCode: string; tsName: string }[]>> {
+  const result = new Map<string, { tsCode: string; tsName: string }[]>();
+  const failedCodes: string[] = [];
+
+  for (let i = 0; i < codes.length; i += batchSize) {
+    const batch = codes.slice(i, i + batchSize);
+    const promises = batch.map(async (code) => {
+      try {
+        const concepts = await getStockConceptsWithCache(code);
+        if (concepts.length > 0) {
+          result.set(code, concepts);
+        }
+      } catch (err) {
+        console.warn(`[batchGetStockConcepts] ${code} 查询失败:`, err);
+        failedCodes.push(code);
+      }
+    });
+    await Promise.all(promises);
+
+    // 批次间延迟，避免限流
+    if (i + batchSize < codes.length) {
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+  }
+
+  if (failedCodes.length > 0) {
+    console.warn(`[batchGetStockConcepts] ${failedCodes.length} 只股票查询失败:`, failedCodes.slice(0, 10).join(', '));
+  }
+
+  return result;
 }
 
 // 获取个股所属概念列表（按股票代码查询）

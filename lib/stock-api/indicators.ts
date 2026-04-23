@@ -241,15 +241,16 @@ const DEFAULT_BUY_RULES: BuyRuleConfig = {
 };
 
 // 检测量化买入信号（支持策略规则配置）
-export function detectBuySignal(klines: DailyKLine[], rules?: BuyRuleConfig): BuySignal {
+export function detectBuySignal(klines: DailyKLine[], rules?: BuyRuleConfig, actualPrice?: { close: number; open: number }): BuySignal {
   const activeRules = rules || DEFAULT_BUY_RULES;
   const closes = klines.map(k => k.close);
   const opens = klines.map(k => k.open);
   const lows = klines.map(k => k.low);
   const volumes = klines.map(k => k.volume);
-  
+
   const n = closes.length;
-  
+  const latestDate = klines[n - 1]?.date || '未知日期';
+
   // 计算均线序列
   const ma5Series = calculateSMASeries(closes, 5);
   const ma10Series = calculateSMASeries(closes, 10);
@@ -276,6 +277,9 @@ export function detectBuySignal(klines: DailyKLine[], rules?: BuyRuleConfig): Bu
   const currentVolume = volumes[n - 1];
   const avgVolume = avgVolSeries[n - 1] || 0;
   const volumeRatioVal = avgVolume > 0 ? currentVolume / avgVolume : 0;
+
+  const displayClose = actualPrice?.close ?? currentClose;
+  const displayOpen = actualPrice?.open ?? currentOpen;
   
   const prevClose = n > 1 ? closes[n - 2] : currentClose;
   const prevOpen = n > 1 ? opens[n - 2] : currentOpen;
@@ -386,7 +390,7 @@ export function detectBuySignal(klines: DailyKLine[], rules?: BuyRuleConfig): Bu
       candleConfirm: {
         name: 'K线确认',
         pass: bullishCandle || bullishEngulfing,
-        value: `收盘价=${currentClose.toFixed(2)}, 开盘价=${currentOpen.toFixed(2)}`,
+        value: `${latestDate} 收盘价=${displayClose.toFixed(2)}, 开盘价=${displayOpen.toFixed(2)}`,
         description: bullishEngulfing ? '看涨吞没形态，强烈买入信号' : (bullishCandle ? '阳线且收盘价站上MA5，买入确认' : 'K线未出现确认形态，建议观望'),
       },
       volumeConfirm: {
@@ -398,6 +402,8 @@ export function detectBuySignal(klines: DailyKLine[], rules?: BuyRuleConfig): Bu
     },
     suggestedPrice: suggestedPrice || undefined,
     stopLoss: stopLoss || undefined,
+    actualClose: actualPrice?.close,
+    actualOpen: actualPrice?.open,
     description: trigger ? 
       `买入信号${strength === 'strong' ? '强烈' : strength === 'medium' ? '明确' : '初步'}触发！建议买入价${suggestedPrice?.toFixed(2)}元，止损位${stopLoss?.toFixed(2)}元` : 
       '买入条件未完全满足，建议继续观察',

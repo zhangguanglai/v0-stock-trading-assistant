@@ -72,7 +72,7 @@ import { format } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
 
 export function StockPoolView() {
-  const { watchlist, removeFromWatchlist, addToWatchlist, toggleFavorite, updateWatchlistStock, strategies, activeStrategyId, setActiveStrategy, addScanFunnel, scanFunnels } =
+  const { watchlist, removeFromWatchlist, addToWatchlist, toggleFavorite, updateWatchlistStock, strategies, activeStrategyId, setActiveStrategy, addScanFunnel, scanFunnels, clearScanFunnels } =
     useStockStore();
 
   const handleRefreshWatchlist = useCallback((updatedStocks: Partial<WatchlistStock>[]) => {
@@ -368,7 +368,7 @@ const validateStockRules = useMemo(() => {
         if (rules.minTurnoverRate5D > 0) {
           params.set('minTurnoverRate', rules.minTurnoverRate5D.toString());
         }
-        // PE分位规则（映射为maxPE参数）
+        // PE规则（绝对PE值，非分位）
         if (rules.maxPEPercentile > 0) {
           params.set('maxPE', rules.maxPEPercentile.toString());
         }
@@ -458,6 +458,21 @@ const validateStockRules = useMemo(() => {
           });
         }
       } else {
+        // 扫描失败也保存到漏斗历史，方便排查问题
+        if (currentFilterStrategy) {
+          const errorFunnel: ScanFunnel = {
+            strategyId: currentFilterStrategy.id,
+            strategyName: currentFilterStrategy.name,
+            scannedAt: new Date().toISOString(),
+            steps: [
+              { label: 'A股全市场', count: 0, filter: '数据获取失败' },
+              { label: '基本面筛选', count: 0, filter: result.error || '扫描失败' },
+            ],
+            totalResult: 0,
+            error: result.error || '扫描失败',
+          };
+          addScanFunnel(errorFunnel);
+        }
         toast.error(result.error || '扫描失败');
       }
     } catch (error) {
@@ -808,7 +823,7 @@ const validateStockRules = useMemo(() => {
                   负债率 &lt; {activeStrategy.stockRules.maxDebtRatio || 50}% <span className="opacity-60">(可选)</span>
                 </Badge>
                 <Badge variant="secondary">
-                  PE分位 &lt; {activeStrategy.stockRules.maxPEPercentile || 30}%
+                  PE &lt; {activeStrategy.stockRules.maxPEPercentile || 30}
                 </Badge>
                 <Badge variant="secondary">
                   换手率 &gt; {activeStrategy.stockRules.minTurnoverRate5D || 3}%
@@ -816,6 +831,11 @@ const validateStockRules = useMemo(() => {
                 <Badge variant="secondary">
                   市值 {activeStrategy.stockRules.minMarketCap || 30}亿 ~ {activeStrategy.stockRules.maxMarketCap === 0 ? '不限' : `${activeStrategy.stockRules.maxMarketCap || 200}亿`}
                 </Badge>
+                {activeStrategy.stockRules.minSectorGain && activeStrategy.stockRules.minSectorGain > 0 && (
+                  <Badge variant="secondary">
+                    板块涨幅 &gt; {activeStrategy.stockRules.minSectorGain}%
+                  </Badge>
+                )}
               </div>
             </CardContent>
           </Card>
@@ -835,22 +855,37 @@ const validateStockRules = useMemo(() => {
                     查看最近 {scanFunnels.length} 次策略筛选的漏斗过滤过程
                   </CardDescription>
                 </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    if (!showFunnelHistory && scanFunnels.length > 0) {
-                      setShowFunnelHistory(true);
-                      setExpandedFunnelId(null);
-                    } else {
-                      setShowFunnelHistory(false);
-                      setExpandedFunnelId(null);
-                    }
-                  }}
-                >
-                  <History className="mr-1 h-3 w-3" />
-                  {showFunnelHistory ? '收起' : '展开'}
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      if (confirm('确定要清除所有扫描历史记录吗？')) {
+                        clearScanFunnels();
+                        toast.success('已清除扫描历史');
+                      }
+                    }}
+                  >
+                    <Trash2 className="mr-1 h-3 w-3" />
+                    清除
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      if (!showFunnelHistory && scanFunnels.length > 0) {
+                        setShowFunnelHistory(true);
+                        setExpandedFunnelId(null);
+                      } else {
+                        setShowFunnelHistory(false);
+                        setExpandedFunnelId(null);
+                      }
+                    }}
+                  >
+                    <History className="mr-1 h-3 w-3" />
+                    {showFunnelHistory ? '收起' : '展开'}
+                  </Button>
+                </div>
               </div>
             </CardHeader>
             {showFunnelHistory && (
@@ -870,8 +905,8 @@ const validateStockRules = useMemo(() => {
                             {format(new Date(funnel.scannedAt), 'yyyy-MM-dd HH:mm:ss', { locale: zhCN })}
                           </p>
                         </div>
-                        <Badge variant={funnel.totalResult > 0 ? 'default' : 'secondary'}>
-                          结果: {funnel.totalResult} 只
+                        <Badge variant={funnel.error ? 'destructive' : funnel.totalResult > 0 ? 'default' : 'secondary'}>
+                          {funnel.error ? `错误: ${funnel.error}` : `结果: ${funnel.totalResult} 只`}
                         </Badge>
                       </div>
 
@@ -1352,11 +1387,13 @@ const validateStockRules = useMemo(() => {
                               </div>
                             ) : (
                               <Badge variant="secondary" className="text-xs">
-                                未触发
+                                已检测 - 未触发
                               </Badge>
                             )
                           ) : (
-                            <span className="text-xs text-muted-foreground" title="该股票未进行买入信号检测">-</span>
+                            <Badge variant="outline" className="text-xs text-muted-foreground">
+                              未检测
+                            </Badge>
                           )}
                         </TableCell>
                         <TableCell className="text-center">

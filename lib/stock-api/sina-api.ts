@@ -106,46 +106,56 @@ export async function getRealtimeQuote(code: string): Promise<ApiResponse<Realti
   }
 }
 
-// 批量获取股票实时行情
+// 批量获取股票实时行情（自动分批，避免URL过长导致431错误）
 export async function getBatchQuotes(codes: string[]): Promise<ApiResponse<RealtimeQuote[]>> {
   try {
     if (codes.length === 0) {
       return { success: true, data: [], timestamp: Date.now() };
     }
     
-    // 格式化所有代码
-    const symbols = codes.map(formatStockCode);
-    const url = `${SINA_QUOTE_URL}${symbols.join(',')}`;
+    // 分批处理，每批最多100只股票，避免URL过长
+    const BATCH_SIZE = 100;
+    const allQuotes: RealtimeQuote[] = [];
     
-    const response = await fetch(url, {
-      headers: {
-        'Referer': 'https://finance.sina.com.cn',
-      },
-      next: { revalidate: 3 },
-    });
-    
-    if (!response.ok) {
-      throw new Error(`HTTP error: ${response.status}`);
-    }
-    
-    const buffer = await response.arrayBuffer();
-    const decoder = new TextDecoder('gbk');
-    const text = decoder.decode(buffer);
-    
-    // 每行一个股票数据
-    const lines = text.trim().split('\n');
-    const quotes: RealtimeQuote[] = [];
-    
-    for (let i = 0; i < lines.length; i++) {
-      const quote = parseSinaQuote(symbols[i], lines[i]);
-      if (quote) {
-        quotes.push(quote);
+    for (let i = 0; i < codes.length; i += BATCH_SIZE) {
+      const batch = codes.slice(i, i + BATCH_SIZE);
+      const symbols = batch.map(formatStockCode);
+      const url = `${SINA_QUOTE_URL}${symbols.join(',')}`;
+      
+      const response = await fetch(url, {
+        headers: {
+          'Referer': 'https://finance.sina.com.cn',
+        },
+        next: { revalidate: 3 },
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error: ${response.status}`);
+      }
+      
+      const buffer = await response.arrayBuffer();
+      const decoder = new TextDecoder('gbk');
+      const text = decoder.decode(buffer);
+      
+      // 每行一个股票数据
+      const lines = text.trim().split('\n');
+      
+      for (let j = 0; j < lines.length; j++) {
+        const quote = parseSinaQuote(symbols[j], lines[j]);
+        if (quote) {
+          allQuotes.push(quote);
+        }
+      }
+      
+      // 批次间短暂延迟，避免请求过快
+      if (i + BATCH_SIZE < codes.length) {
+        await new Promise(resolve => setTimeout(resolve, 100));
       }
     }
     
     return {
       success: true,
-      data: quotes,
+      data: allQuotes,
       timestamp: Date.now(),
     };
   } catch (error) {

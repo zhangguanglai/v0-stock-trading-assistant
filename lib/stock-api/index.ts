@@ -40,7 +40,7 @@ export async function getStockFullData(code: string): Promise<ApiResponse<StockF
   let latestCandle: { open: number; close: number; high: number; low: number } | null = null;
   if (isTushareConfigured()) {
     // 获取K线数据计算技术指标
-    const klineResult = await getDailyKLine(code);
+    const klineResult = await getDailyKLine(code, undefined, undefined, 120, 'qfq');
     if (klineResult.success && klineResult.data && klineResult.data.length > 0) {
       indicators = calculateAllIndicators(klineResult.data);
       signals = generateSignals(quote.price, indicators);

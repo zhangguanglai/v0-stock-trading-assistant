@@ -3,9 +3,10 @@
 // 5000积分权限支持
 import { NextRequest, NextResponse } from 'next/server';
 import { getBatchQuotes, getFinanceIndicators, isTushareConfigured, getDailyKLine, detectBuySignal } from '@/lib/stock-api';
-import { getAllDailyBasic, getAllStockBasic, getConceptIndices, getConceptDaily, getConceptMembers } from '@/lib/stock-api/tushare-api';
-import type { BuySignal } from '@/lib/stock-api/types';
+import { getAllDailyBasic, getStockBasic, getAllStockBasic, getConceptIndices, getConceptDaily, getConceptMembers, isTradingHours } from '@/lib/stock-api/tushare-api';
+import type { BuySignal, RealtimeQuote } from '@/lib/stock-api/types';
 import type { BuyRuleConfig } from '@/lib/stock-api/indicators';
+import { checkStockRules, type FilterContext } from '@/lib/stock-scan/filter-engine';
 
 export const dynamic = 'force-dynamic';
 
@@ -16,6 +17,8 @@ interface StrategyRules {
   maxDebtRatio?: number;
   minTurnoverRate?: number;
   maxPE?: number;
+  maxPEPercentile?: number;
+  minTurnoverRate5D?: number;
   minPB?: number;
   maxPB?: number;
   minVolumeRatio?: number;
@@ -58,22 +61,11 @@ interface ScanFunnelStep {
   filter: string;
 }
 
-// 常用板块股票池（回退使用）
-const STOCK_POOLS: Record<string, string[]> = {
-  all: [
-    '600519', '000858', '000333', '600036', '000001', '601318', '002475', '002714',
-    '300750', '300059', '002352', '600276', '000568', '601012', '002594', '600900',
-    '000651', '601888', '002304', '600031', '002230', '300015', '002415', '002049',
-    '300274', '000977', '300014', '300033', '002241', '300124', '600745', '300760',
-    '603501', '688981', '002050', '002821', '600585', '000725', '601166', '600000',
-    '601966', '601169', '601857', '601398', '601939',
-  ],
-};
 
 // 获取候选股票池 + 基本面数据
 async function getCandidateStocks(rules: StrategyRules): Promise<{
   codes: string[];
-  filteredCount: number; // 基本面规则过滤后的真实数量
+  filteredCount: number;
   basicDataMap: Map<string, {
     marketCap: number;
     pe: number;
@@ -82,60 +74,129 @@ async function getCandidateStocks(rules: StrategyRules): Promise<{
     volumeRatio: number;
   }>;
   source: string;
+  error?: string;
+  nameMap: Map<string, string>;
 }> {
   if (isTushareConfigured()) {
     try {
-      console.log('[Scan] 使用 getAllDailyBasic 获取全市场基本面数据...');
+      // 第一步：获取全市场股票列表（stock_basic 返回全量约5400只）
+      console.log('[Scan] 获取全市场股票列表...');
+      const stockBasicResult = await getStockBasic();
+      
+      if (!stockBasicResult.success || !stockBasicResult.data || stockBasicResult.data.length < 100) {
+        throw new Error(`stock_basic 返回数据不足: ${stockBasicResult.data?.length || 0}只`);
+      }
+      
+      const totalStocks = stockBasicResult.data.length;
+      console.log(`[Scan] stock_basic 返回 ${totalStocks} 只股票`);
+      
+      // 构建股票代码->名称映射
+      const nameMap = new Map<string, string>();
+      stockBasicResult.data.forEach(s => nameMap.set(s.code, s.name));
+      
+      // 第二步：获取当日基本面数据（daily_basic 只返回有当日数据的股票）
+      console.log('[Scan] 获取当日基本面数据...');
       const allBasicResult = await getAllDailyBasic();
       
-      if (allBasicResult.success && allBasicResult.data && allBasicResult.data.length > 100) {
-        // 按规则筛选
-        const filtered = allBasicResult.data.filter(item => {
-          if (item.marketCap <= 0) return false;
-          if (rules.maxMarketCap && rules.maxMarketCap > 0 && item.marketCap > rules.maxMarketCap) return false;
-          if (rules.minMarketCap && item.marketCap < rules.minMarketCap) return false;
-          if (rules.maxPE && item.pe > 0 && item.pe > rules.maxPE) return false;
-          if (rules.minTurnoverRate && item.turnoverRate < rules.minTurnoverRate) return false;
-          if (rules.minVolumeRatio && item.volumeRatio < rules.minVolumeRatio) return false;
-          if (rules.minPB && item.pb < rules.minPB) return false;
-          if (rules.maxPB && item.pb > rules.maxPB) return false;
-          return true;
+      // 构建基本面数据映射
+      const basicDataLookup = new Map<string, typeof allBasicResult.data[0]>();
+      if (allBasicResult.success && allBasicResult.data) {
+        allBasicResult.data.forEach(item => {
+          basicDataLookup.set(item.code, item);
         });
+        console.log(`[Scan] daily_basic 返回 ${allBasicResult.data.length} 只股票有当日数据`);
+      }
+      
+      // 第三步：过滤 + 填充数据
+      // 过滤掉ST股、退市股等
+      const validStocks = stockBasicResult.data.filter(s => {
+        const name = s.name || '';
+        if (name.includes('ST') || name.includes('退') || name.includes('停牌')) return false;
+        return true;
+      });
+      console.log(`[Scan] 过滤ST/退市股后剩余 ${validStocks.length} 只`);
+      
+      const filtered: (typeof allBasicResult.data)[0][] = [];
+      let noDataButKept = 0;
+      let filteredByMinMarketCap = 0;
+      let filteredByMaxMarketCap = 0;
+      let filteredByMaxPE = 0;
+      let filteredByOther = 0;
+      
+      for (const stock of validStocks) {
+        const basic = basicDataLookup.get(stock.code);
         
-        // 按综合评分排序，不限制数量（返回所有符合条件的股票）
-        const sorted = filtered
-          .map(item => ({
-            ...item,
-            score: calculateBasicScore(item, rules),
-          }))
-          .sort((a, b) => b.score - a.score);
-        
-        const codes = sorted.map(item => item.code);
-        const basicDataMap = new Map<string, {
-          marketCap: number; pe: number; pb: number; turnoverRate: number; volumeRatio: number;
-        }>();
-        sorted.forEach(item => {
-          basicDataMap.set(item.code, {
-            marketCap: item.marketCap, pe: item.pe, pb: item.pb,
-            turnoverRate: item.turnoverRate, volumeRatio: item.volumeRatio,
+        if (basic && basic.marketCap > 0) {
+          // 有基本面数据，正常筛选（仅估值指标：市值、PE、PB）
+          if (rules.maxMarketCap && rules.maxMarketCap > 0 && basic.marketCap > rules.maxMarketCap) { filteredByMaxMarketCap++; continue; }
+          if (rules.minMarketCap && basic.marketCap < rules.minMarketCap) { filteredByMinMarketCap++; continue; }
+          if (rules.maxPE && basic.pe > 0 && basic.pe > rules.maxPE) { filteredByMaxPE++; continue; }
+          // 换手率、量比移至资金面筛选
+          filtered.push(basic);
+        } else {
+          // 无基本面数据（停牌/新上市等）— 不淘汰，保留进入后续筛选
+          filtered.push({
+            code: stock.code,
+            marketCap: 0,
+            circulatingCap: 0,
+            pe: 0,
+            pb: 0,
+            turnoverRate: 0,
+            volumeRatio: 1,
+            close: 0,
+            changePercent: 0,
           });
-        });
-        
-        if (codes.length > 0) {
-          console.log(`[Scan] 全市场筛选完成: ${allBasicResult.data.length}只 → ${filtered.length}只符合 → 取${codes.length}只`);
-          return { codes, filteredCount: filtered.length, basicDataMap, source: 'tushare-full-market' };
+          noDataButKept++;
         }
       }
+      
+      console.log(`[Scan] 基本面筛选明细:`);
+      console.log(`  - 有效股票: ${validStocks.length}只`);
+      console.log(`  - 有数据且符合条件: ${filtered.length - noDataButKept}只`);
+      console.log(`  - 无数据但保留: ${noDataButKept}只`);
+      console.log(`  - 市值<${rules.minMarketCap || '?'}亿: ${filteredByMinMarketCap}只`);
+      console.log(`  - 市值>${rules.maxMarketCap || '?'}亿: ${filteredByMaxMarketCap}只`);
+      console.log(`  - PE>${rules.maxPE || '?'}: ${filteredByMaxPE}只`);
+      console.log(`  - 其他条件: ${filteredByOther}只`);
+      console.log(`  - 进入下一步: ${filtered.length}只`);
+      
+      // 按综合评分排序
+      const sorted = filtered
+        .map(item => ({
+          ...item,
+          score: calculateBasicScore(item, rules),
+        }))
+        .sort((a, b) => b.score - a.score);
+      
+      const codes = sorted.map(item => item.code);
+      const basicDataMap = new Map<string, {
+        marketCap: number; pe: number; pb: number; turnoverRate: number; volumeRatio: number;
+      }>();
+      sorted.forEach(item => {
+        basicDataMap.set(item.code, {
+          marketCap: item.marketCap, pe: item.pe, pb: item.pb,
+          turnoverRate: item.turnoverRate, volumeRatio: item.volumeRatio,
+        });
+      });
+      
+      if (codes.length > 0) {
+        console.log(`[Scan] 全市场筛选完成: ${totalStocks}只 → ${validStocks.length}只有效 → ${filtered.length}只符合基本面规则 → 取${codes.length}只`);
+        return { codes, filteredCount: filtered.length, basicDataMap, source: 'tushare-full-market', nameMap };
+      }
     } catch (e) {
-      console.error('[Scan] getAllDailyBasic 失败:', e);
+      console.error('[Scan] 获取候选股票失败:', e);
+      console.error('[Scan] 错误详情:', e instanceof Error ? e.stack : String(e));
+      const errMsg = e instanceof Error ? e.message : String(e);
+      const emptyMap = new Map<string, { marketCap: number; pe: number; pb: number; turnoverRate: number; volumeRatio: number }>();
+      const emptyNameMap = new Map<string, string>();
+      return { codes: [], filteredCount: 0, basicDataMap: emptyMap, source: 'error', error: `数据获取失败: ${errMsg}`, nameMap: emptyNameMap };
     }
+  } else {
+    console.warn('[Scan] Tushare 未配置 (TUSHARE_TOKEN 未设置)');
+    const emptyMap = new Map<string, { marketCap: number; pe: number; pb: number; turnoverRate: number; volumeRatio: number }>();
+    const emptyNameMap = new Map<string, string>();
+    return { codes: [], filteredCount: 0, basicDataMap: emptyMap, source: 'error', error: 'TUSHARE_TOKEN 未配置', nameMap: emptyNameMap };
   }
-  
-  // 回退到固定池
-  const basicDataMap = new Map<string, {
-    marketCap: number; pe: number; pb: number; turnoverRate: number; volumeRatio: number;
-  }>();
-  return { codes: STOCK_POOLS.all, filteredCount: STOCK_POOLS.all.length, basicDataMap, source: 'default-pool' };
 }
 
 // 判断是否应使用Tushare收盘价（非交易时段或周末）
@@ -220,7 +281,8 @@ async function getIndustryMap(codes: string[]): Promise<Map<string, string>> {
 
 // 获取板块涨幅映射（用于minSectorGain过滤）
 // 返回：股票代码 -> 其所属概念板块中涨幅最高的那个板块的涨跌幅
-// 核心逻辑：获取全量概念当日行情 + 全量概念成分，构建反向映射
+// 核心逻辑：按股票代码反向查询所属概念 + 与当日板块行情匹配
+// 优化：使用batchGetStockConcepts带缓存，按交易日失效
 async function getSectorGainMap(
   codes: string[],
   minSectorGain: number
@@ -254,52 +316,46 @@ async function getSectorGainMap(
       });
     }
     
-    // 3. 获取候选股票所属概念（按股票代码反向查询）
-    // 分批处理，每批20只，避免并发过多
-    const uniqueCodes = [...new Set(codes)].slice(0, 300); // 最多处理300只
-    const batchSize = 20;
+    // 3. 按股票代码反向查询所属概念（带缓存，分批限流）
+    const uniqueCodes = [...new Set(codes)];
+    console.log(`[SectorGain] 开始查询${uniqueCodes.length}只股票的所属概念...`);
     
-    for (let i = 0; i < uniqueCodes.length; i += batchSize) {
-      const batch = uniqueCodes.slice(i, i + batchSize);
-      const promises = batch.map(async (code) => {
-        try {
-          // 按股票代码查询所属概念
-          const memberResult = await getConceptMembers(undefined, code.replace(/^(sh|sz|bj)/, '') + '.' + (code.startsWith('6') || code.startsWith('9') ? 'SH' : 'SZ'));
-          if (memberResult.success && memberResult.data && memberResult.data.length > 0) {
-            // 找出该股票所属概念中涨幅最高的
-            let maxGain = -Infinity;
-            let bestSector = '';
-            let bestSectorName = '';
-            
-            for (const member of memberResult.data) {
-              const gain = sectorPctMap.get(member.tsCode);
-              if (gain !== undefined && gain > maxGain) {
-                maxGain = gain;
-                bestSector = member.tsCode;
-                bestSectorName = sectorNameMap.get(member.tsCode) || member.tsCode;
-              }
-            }
-            
-            if (bestSector) {
-              return { code, sectorCode: bestSector, sectorName: bestSectorName, gain: maxGain };
-            }
-          }
-        } catch {
-          // 忽略
-        }
-        return null;
-      });
+    // 将候选股票转换为Tushare格式 (000001.SZ)
+    const tsCodes = uniqueCodes.map(code => {
+      const cleanCode = code.replace(/^(sh|sz|bj)/i, '');
+      const market = code.startsWith('6') || code.startsWith('9') ? 'SH' : 'SZ';
+      return `${cleanCode}.${market}`;
+    });
+    
+    // 批量获取股票所属概念（内部带缓存）
+    const { batchGetStockConcepts } = await import('@/lib/stock-api/tushare-api');
+    const stockConceptsMap = await batchGetStockConcepts(tsCodes, 10, 200);
+    console.log(`[SectorGain] 成功获取${stockConceptsMap.size}只股票的概念归属`);
+    
+    // 4. 匹配候选股票与板块涨幅
+    for (let i = 0; i < uniqueCodes.length; i++) {
+      const code = uniqueCodes[i];
+      const tsCode = tsCodes[i];
+      const concepts = stockConceptsMap.get(tsCode);
       
-      const results = await Promise.all(promises);
-      results.forEach(r => {
-        if (r) {
-          sectorGainMap.set(r.code, { sectorCode: r.sectorCode, sectorName: r.sectorName, gain: r.gain });
-        }
-      });
+      if (!concepts || concepts.length === 0) continue;
       
-      // 批次间短暂延迟
-      if (i + batchSize < uniqueCodes.length) {
-        await new Promise(resolve => setTimeout(resolve, 200));
+      // 找出该股票所属概念中涨幅最高的
+      let maxGain = -Infinity;
+      let bestSector = '';
+      let bestSectorName = '';
+      
+      for (const concept of concepts) {
+        const gain = sectorPctMap.get(concept.tsCode);
+        if (gain !== undefined && gain > maxGain) {
+          maxGain = gain;
+          bestSector = concept.tsCode;
+          bestSectorName = concept.tsName;
+        }
+      }
+      
+      if (bestSector) {
+        sectorGainMap.set(code, { sectorCode: bestSector, sectorName: bestSectorName, gain: maxGain });
       }
     }
     
@@ -312,7 +368,7 @@ async function getSectorGainMap(
 }
 
 // 检测买入信号（获取K线并分析）- 并行获取
-async function detectBuySignalsForStocks(codes: string[], limit: number = 100, buyRuleConfig?: BuyRuleConfig): Promise<Map<string, BuySignal>> {
+async function detectBuySignalsForStocks(codes: string[], limit: number = 300, buyRuleConfig?: BuyRuleConfig): Promise<Map<string, BuySignal>> {
   const signalMap = new Map<string, BuySignal>();
   
   if (!isTushareConfigured()) return signalMap;
@@ -325,7 +381,7 @@ async function detectBuySignalsForStocks(codes: string[], limit: number = 100, b
     const batch = uniqueCodes.slice(i, i + batchSize);
     const promises = batch.map(async (code) => {
       try {
-        const klineResult = await getDailyKLine(code, undefined, undefined, 120);
+        const klineResult = await getDailyKLine(code, undefined, undefined, 120, 'qfq');
         if (klineResult.success && klineResult.data && klineResult.data.length >= 60) {
           const signal = detectBuySignal(klineResult.data, buyRuleConfig);
           return { code, signal };
@@ -371,7 +427,7 @@ async function checkWeeklyMACDGoldenCross(codes: string[]): Promise<Map<string, 
   
   const promises = codes.slice(0, 100).map(async (code) => {
     try {
-      const klineResult = await getDailyKLine(code, undefined, undefined, 120);
+      const klineResult = await getDailyKLine(code, undefined, undefined, 120, 'qfq');
       if (klineResult.success && klineResult.data && klineResult.data.length >= 60) {
         const klines = klineResult.data;
         // 简单的周线MACD近似：取每周最后一个交易日的数据
@@ -459,22 +515,25 @@ export async function GET(request: NextRequest) {
       });
     }
     
-    // 步骤2: 基本面筛选
-    const { codes: candidateCodes, filteredCount, basicDataMap, source: poolSource } = await getCandidateStocks(rules);
-    console.log(`[Scan] 候选股票: ${candidateCodes.length} 只 (过滤后${filteredCount}只), 来源: ${poolSource}`);
-    const poolFilters: string[] = [];
-    if (poolSource === 'tushare-full-market') {
-      poolFilters.push(`市值≥${rules.minMarketCap || 30}亿`);
-      if (rules.maxMarketCap && rules.maxMarketCap > 0) poolFilters.push(`市值≤${rules.maxMarketCap}亿`);
-      else poolFilters.push('市值不限');
-      if (rules.maxPE) poolFilters.push(`PE≤${rules.maxPE}`);
-      if (rules.minPB) poolFilters.push(`PB≥${rules.minPB}`);
-      if (rules.maxPB) poolFilters.push(`PB≤${rules.maxPB}`);
-      if (rules.minTurnoverRate) poolFilters.push(`换手率≥${rules.minTurnoverRate}%`);
-      if (rules.minVolumeRatio) poolFilters.push(`量比≥${rules.minVolumeRatio}`);
-    } else {
-      poolFilters.push('默认固定股票池');
+    // 步骤2: 基本面筛选（基于getCandidateStocks的结果）
+    // 基本面条件：市值、PE、PB（估值指标）
+    const { codes: candidateCodes, filteredCount, basicDataMap, source: poolSource, error: poolError } = await getCandidateStocks(rules);
+    console.log(`[Scan] 候选股票: ${candidateCodes.length} 只 (过滤后${filteredCount}只), 来源: ${poolSource}${poolError ? ', 错误: ' + poolError : ''}`);
+
+    if (poolSource === 'error' || candidateCodes.length === 0) {
+      return NextResponse.json({
+        success: false,
+        error: poolError || '数据获取失败，无法执行选股扫描',
+        timestamp: Date.now(),
+      }, { status: 503 });
     }
+
+    const poolFilters: string[] = [];
+    if (rules.minMarketCap) poolFilters.push(`市值≥${rules.minMarketCap}亿`);
+    if (rules.maxMarketCap && rules.maxMarketCap > 0) poolFilters.push(`市值≤${rules.maxMarketCap}亿`);
+    if (rules.maxPE) poolFilters.push(`PE≤${rules.maxPE}`);
+    if (rules.minPB) poolFilters.push(`PB≥${rules.minPB}`);
+    if (rules.maxPB) poolFilters.push(`PB≤${rules.maxPB}`);
     
     funnelSteps.push({
       label: '基本面筛选',
@@ -487,59 +546,87 @@ export async function GET(request: NextRequest) {
     const useClosePrice = shouldUseTushareClosePrice();
     console.log(`[Scan] 价格数据源: ${useClosePrice ? 'Tushare收盘价(非交易时段)' : '新浪实时行情'}`);
     
-    // 转换为新浪代码格式
-    const sinaCodes = candidateCodes.map(code => {
-      if (code.startsWith('6') || code.startsWith('9')) return `sh${code}`;
-      if (code.startsWith('0') || code.startsWith('3')) return `sz${code}`;
-      return `sh${code}`;
-    });
-    
-    // 获取Tushare当日收盘价（非交易时段使用）
-    // daily_basic 不含 pct_chg，所以只获取收盘价，涨跌幅保留新浪的计算结果
-    const closePriceMap = new Map<string, { price: number }>();
-    if (useClosePrice && isTushareConfigured()) {
+    // 获取Tushare当日收盘价和涨跌幅（非交易时段直接使用，交易时段作为备用）
+    const closePriceMap = new Map<string, { price: number; changePercent: number }>();
+    const nameMap = new Map<string, string>(); // 股票代码->名称映射
+    if (isTushareConfigured()) {
       try {
+        // 获取基本面数据（包含收盘价和涨跌幅）
         const allBasicResult = await getAllDailyBasic();
         if (allBasicResult.success && allBasicResult.data) {
           allBasicResult.data.forEach(item => {
             if (item.close > 0) {
-              closePriceMap.set(item.code, { price: item.close });
+              closePriceMap.set(item.code, { price: item.close, changePercent: item.changePercent });
             }
           });
           console.log(`[Scan] 获取到${closePriceMap.size}只股票的Tushare收盘价`);
         }
+        
+        // 获取股票名称映射
+        const stockBasicResult = await getStockBasic();
+        if (stockBasicResult.success && stockBasicResult.data) {
+          stockBasicResult.data.forEach(s => nameMap.set(s.code, s.name));
+          console.log(`[Scan] 获取到${nameMap.size}只股票名称`);
+        }
       } catch (e) {
-        console.error('[Scan] 获取Tushare收盘价失败:', e);
+        console.error('[Scan] 获取Tushare数据失败:', e);
       }
     }
     
-    // 获取新浪实时行情
-    const quotesResult = await getBatchQuotes(sinaCodes);
+    let mergedQuotes: RealtimeQuote[];
     
-    if (!quotesResult.success || !quotesResult.data) {
-      return NextResponse.json({
-        success: false,
-        error: quotesResult.error || '获取行情失败',
-        timestamp: Date.now(),
+    if (useClosePrice) {
+      // 非交易时段：直接使用Tushare收盘价，跳过新浪请求
+      console.log('[Scan] 非交易时段，使用Tushare收盘价，跳过新浪实时行情请求');
+      mergedQuotes = candidateCodes.map(code => {
+        const closeData = closePriceMap.get(code);
+        const prevClose = closeData?.price && closeData?.changePercent !== undefined
+          ? closeData.price / (1 + closeData.changePercent / 100)
+          : closeData?.price || 0;
+        return {
+          code: code.startsWith('6') || code.startsWith('9') ? `sh${code}` : `sz${code}`,
+          name: nameMap.get(code) || '',
+          price: closeData?.price || 0,
+          changePercent: closeData?.changePercent || 0,
+          volume: 0,
+          amount: 0,
+          prevClose,
+          open: closeData?.price || 0,
+          high: closeData?.price || 0,
+          low: closeData?.price || 0,
+          bid1: 0,
+          bid1Vol: 0,
+          ask1: 0,
+          ask1Vol: 0,
+          date: '',
+          time: '',
+          change: closeData?.price ? closeData.price - prevClose : 0,
+        };
+      });
+    } else {
+      // 交易时段：使用新浪实时行情
+      const sinaCodes = candidateCodes.map(code => {
+        if (code.startsWith('6') || code.startsWith('9')) return `sh${code}`;
+        if (code.startsWith('0') || code.startsWith('3')) return `sz${code}`;
+        return `sh${code}`;
+      });
+      
+      const quotesResult = await getBatchQuotes(sinaCodes);
+      
+      if (!quotesResult.success || !quotesResult.data) {
+        return NextResponse.json({
+          success: false,
+          error: quotesResult.error || '获取行情失败',
+          timestamp: Date.now(),
+        });
+      }
+      
+      // 合并行情数据
+      mergedQuotes = quotesResult.data.map(quote => {
+        const code = quote.code.replace(/^(sh|sz|bj)/, '');
+        return quote;
       });
     }
-    
-    // 合并行情数据：优先使用Tushare收盘价，涨跌幅使用新浪的计算结果
-    const mergedQuotes = quotesResult.data.map(quote => {
-      const code = quote.code.replace(/^(sh|sz|bj)/, '');
-      
-      // 非交易时段：使用Tushare收盘价替换价格，但保留新浪涨跌幅
-      if (useClosePrice && closePriceMap.has(code)) {
-        const closeData = closePriceMap.get(code)!;
-        return {
-          ...quote,
-          price: closeData.price,
-          // 涨跌幅保持新浪的计算结果（基于收盘价计算）
-        };
-      }
-      
-      return quote;
-    });
     
     // 静默过滤无效行情（停牌、退市等），不加入漏斗
     const validQuotes = mergedQuotes.filter(q => q.price > 0);
@@ -587,13 +674,13 @@ export async function GET(request: NextRequest) {
     const codesForTechnicalAnalysis = validQuotes.map(q => q.code.replace(/^(sh|sz|bj)/, ''));
     
     if (needsTechnicalCheck && isTushareConfigured() && codesForTechnicalAnalysis.length > 0) {
-      // 分批处理，每批10只
-      const batchSize = 10;
+      // 分批处理，每批5只（减少并发，避免Tushare限流）
+      const batchSize = 5;
       for (let i = 0; i < codesForTechnicalAnalysis.length; i += batchSize) {
         const batch = codesForTechnicalAnalysis.slice(i, i + batchSize);
         const promises = batch.map(async (code) => {
           try {
-            const klineResult = await getDailyKLine(code, undefined, undefined, 120);
+            const klineResult = await getDailyKLine(code, undefined, undefined, 120, 'qfq');
             if (klineResult.success && klineResult.data && klineResult.data.length >= 60) {
               const klines = klineResult.data;
               const closes = klines.map(k => k.close);
@@ -636,8 +723,8 @@ export async function GET(request: NextRequest) {
               
               return { code, ma5, ma20, weeklyMACDGoldenCross };
             }
-          } catch {
-            // 忽略
+          } catch (e) {
+            console.log(`[TechnicalData] 获取${code}K线失败:`, e);
           }
           return null;
         });
@@ -660,162 +747,38 @@ export async function GET(request: NextRequest) {
       candleConfirm: rules.buyCandleConfirm !== undefined ? rules.buyCandleConfirm : true,
       volumeConfirm: rules.buyVolumeConfirm !== undefined ? rules.buyVolumeConfirm : true,
     };
-    const buySignalMap = await detectBuySignalsForStocks(candidateCodes, 100, buyRuleConfig);
+    const buySignalMap = await detectBuySignalsForStocks(candidateCodes, 300, buyRuleConfig);
     
-    // 4. 基于规则筛选
+    // 4. 基于规则筛选（使用统一过滤引擎）
     const scanResults: ScanStock[] = validQuotes
       .map(quote => {
         const code = quote.code.replace(/^(sh|sz|bj)/, '');
         const basicData = basicDataMap.get(code);
+        const finance = financeMap.get(code);
+        const techData = technicalDataMap.get(code);
+        const sectorData = sectorGainMap.get(code);
         
         // 确定价格来源
         const priceSource = (useClosePrice && closePriceMap.has(code)) ? 'close' : 'realtime';
         
-        const ruleChecks: { rule: string; pass: boolean; value?: string }[] = [];
-        let meetsAllRules = true;
-        let score = 50;
+        // 构建过滤上下文
+        const filterCtx: FilterContext = {
+          code,
+          quote: {
+            price: quote.price,
+            changePercent: quote.changePercent,
+            volume: quote.volume,
+            amount: quote.amount,
+            name: quote.name,
+          },
+          basicData: basicData || null,
+          finance: finance || null,
+          technical: techData || null,
+          sector: sectorData || null,
+        };
         
-        // 市值规则
-        if (basicData && rules.maxMarketCap !== undefined) {
-          const pass = basicData.marketCap <= rules.maxMarketCap;
-          ruleChecks.push({ rule: `市值 ≤ ${rules.maxMarketCap}亿`, pass, value: `${basicData.marketCap.toFixed(0)}亿` });
-          if (!pass) meetsAllRules = false;
-        }
-        
-        if (basicData && rules.minMarketCap !== undefined) {
-          const pass = basicData.marketCap >= rules.minMarketCap;
-          ruleChecks.push({ rule: `市值 ≥ ${rules.minMarketCap}亿`, pass, value: `${basicData.marketCap.toFixed(0)}亿` });
-          if (!pass) meetsAllRules = false;
-        }
-        
-        // PE规则
-        if (basicData && rules.maxPE !== undefined && basicData.pe > 0) {
-          const pass = basicData.pe <= rules.maxPE;
-          ruleChecks.push({ rule: `PE ≤ ${rules.maxPE}`, pass, value: basicData.pe.toFixed(1) });
-          if (!pass) meetsAllRules = false;
-        }
-        
-        // PB规则
-        if (basicData && rules.minPB !== undefined && basicData.pb > 0) {
-          const pass = basicData.pb >= rules.minPB;
-          ruleChecks.push({ rule: `PB ≥ ${rules.minPB}`, pass, value: basicData.pb.toFixed(2) });
-          if (!pass) meetsAllRules = false;
-        }
-        
-        if (basicData && rules.maxPB !== undefined && basicData.pb > 0) {
-          const pass = basicData.pb <= rules.maxPB;
-          ruleChecks.push({ rule: `PB ≤ ${rules.maxPB}`, pass, value: basicData.pb.toFixed(2) });
-          if (!pass) meetsAllRules = false;
-        }
-        
-        // 换手率规则
-        if (basicData && rules.minTurnoverRate !== undefined) {
-          const pass = basicData.turnoverRate >= rules.minTurnoverRate;
-          ruleChecks.push({ rule: `换手率 ≥ ${rules.minTurnoverRate}%`, pass, value: `${basicData.turnoverRate.toFixed(2)}%` });
-          if (!pass) meetsAllRules = false;
-        }
-        
-        // 量比规则
-        if (basicData && rules.minVolumeRatio !== undefined) {
-          const pass = basicData.volumeRatio >= rules.minVolumeRatio;
-          ruleChecks.push({ rule: `量比 ≥ ${rules.minVolumeRatio}`, pass, value: basicData.volumeRatio.toFixed(2) });
-          if (!pass) meetsAllRules = false;
-        }
-        
-        // ROE规则（加分项，无数据时不强制排除，仅影响评分）
-        const finance = financeMap.get(code);
-        if (rules.minROE !== undefined) {
-          if (!finance || finance.roe <= 0) {
-            ruleChecks.push({ rule: `ROE ≥ ${rules.minROE}%`, pass: false, value: '无数据' });
-            // 不设置 meetsAllRules = false，作为加分项
-          } else {
-            const pass = finance.roe >= rules.minROE;
-            ruleChecks.push({ rule: `ROE ≥ ${rules.minROE}%`, pass, value: `${finance.roe.toFixed(1)}%` });
-            if (!pass) score -= 10; // ROE不达标扣分
-          }
-        }
-        
-        // 负债率规则（加分项，无数据时不强制排除）
-        if (rules.maxDebtRatio !== undefined) {
-          if (!finance || finance.debtRatio <= 0) {
-            ruleChecks.push({ rule: `负债率 ≤ ${rules.maxDebtRatio}%`, pass: false, value: '无数据' });
-            // 不设置 meetsAllRules = false，作为加分项
-          } else {
-            const pass = finance.debtRatio <= rules.maxDebtRatio;
-            ruleChecks.push({ rule: `负债率 ≤ ${rules.maxDebtRatio}%`, pass, value: `${finance.debtRatio.toFixed(1)}%` });
-            if (!pass) score -= 10; // 负债率超标扣分
-          }
-        }
-        
-        // 技术面规则：股价>MA5
-        if (rules.priceAboveMA5) {
-          const techData = technicalDataMap.get(code);
-          if (!techData || !techData.ma5 || techData.ma5 <= 0) {
-            ruleChecks.push({ rule: `股价 > MA5`, pass: false, value: '无数据' });
-          } else {
-            const pass = quote.price > techData.ma5;
-            ruleChecks.push({ rule: `股价 > MA5`, pass, value: `现价${quote.price.toFixed(2)} MA5=${techData.ma5.toFixed(2)}` });
-            if (!pass) meetsAllRules = false;
-          }
-        }
-        
-        // 技术面规则：股价>MA20
-        if (rules.priceAboveMA20) {
-          const techData = technicalDataMap.get(code);
-          if (!techData || !techData.ma20 || techData.ma20 <= 0) {
-            ruleChecks.push({ rule: `股价 > MA20`, pass: false, value: '无数据' });
-          } else {
-            const pass = quote.price > techData.ma20;
-            ruleChecks.push({ rule: `股价 > MA20`, pass, value: `现价${quote.price.toFixed(2)} MA20=${techData.ma20.toFixed(2)}` });
-            if (!pass) meetsAllRules = false;
-          }
-        }
-        
-        // 技术面规则：周MACD金叉
-        if (rules.weeklyMACDGoldenCross) {
-          const techData = technicalDataMap.get(code);
-          if (!techData || techData.weeklyMACDGoldenCross === undefined) {
-            ruleChecks.push({ rule: `周MACD金叉`, pass: false, value: '无数据' });
-          } else {
-            const pass = techData.weeklyMACDGoldenCross;
-            ruleChecks.push({ rule: `周MACD金叉`, pass, value: pass ? '已金叉' : '未金叉' });
-            if (!pass) meetsAllRules = false;
-          }
-        }
-        
-        // 板块涨幅规则：所属概念板块当日涨跌幅 ≥ minSectorGain
-        if (rules.minSectorGain && rules.minSectorGain > 0) {
-          const sectorData = sectorGainMap.get(code);
-          if (!sectorData) {
-            ruleChecks.push({ rule: `板块涨幅 ≥ ${rules.minSectorGain}%`, pass: false, value: '无板块数据' });
-            // 无板块数据时不排除，作为软过滤
-          } else {
-            const pass = sectorData.gain >= rules.minSectorGain;
-            ruleChecks.push({ rule: `板块涨幅 ≥ ${rules.minSectorGain}%`, pass, value: `${sectorData.sectorName} ${sectorData.gain.toFixed(2)}%` });
-            if (!pass) meetsAllRules = false;
-          }
-        }
-        
-        // 综合评分调整
-        if (quote.changePercent > 0 && quote.changePercent < 5) score += 10;
-        else if (quote.changePercent >= 5) score += 5;
-        else if (quote.changePercent < -5) score -= 15;
-        
-        if (basicData) {
-          if (basicData.marketCap > 0 && basicData.marketCap < 50) score += 15;
-          else if (basicData.marketCap < 100) score += 10;
-          else if (basicData.marketCap < 200) score += 5;
-          if (basicData.pe > 0 && basicData.pe < 20) score += 10;
-          else if (basicData.pe < 40) score += 5;
-        }
-        
-        if (finance && finance.roe > 15) score += 15;
-        else if (finance && finance.roe > 10) score += 10;
-        else if (finance && finance.roe > 5) score += 5;
-        
-        if (finance && finance.debtRatio > 0 && finance.debtRatio < 40) score += 5;
-        
-        if (basicData && basicData.volumeRatio > 2) score += 5;
+        // 使用统一过滤引擎
+        const filterResult = checkStockRules(rules, filterCtx);
         
         return {
           code,
@@ -833,9 +796,9 @@ export async function GET(request: NextRequest) {
           volumeRatio: basicData?.volumeRatio || 1,
           roe: finance?.roe || null,
           debtRatio: finance?.debtRatio || null,
-          score: Math.max(0, Math.min(100, score)),
-          ruleChecks,
-          meetsRules: meetsAllRules,
+          score: filterResult.score,
+          ruleChecks: filterResult.ruleChecks,
+          meetsRules: filterResult.meetsRules,
           buySignal: buySignalMap.get(code),
         };
       })
@@ -852,33 +815,44 @@ export async function GET(request: NextRequest) {
     
     const matchCount = scanResults.filter(s => s.meetsRules).length;
     
-    // 漏斗：技术面筛选（整合所有技术条件为一步）
+    // ===== 漏斗构建（按基本面→技术面→资金面顺序） =====
+    
+    // 漏斗步骤2: 技术面筛选
+    // 技术面条件：股价>MA5、股价>MA20、周MACD金叉
+    // 注意：无数据时不作为硬性淘汰（与meetsAllRules逻辑保持一致）
     const hasTechnicalRules = rules.priceAboveMA5 || rules.priceAboveMA20 || rules.weeklyMACDGoldenCross;
     if (hasTechnicalRules) {
-      // 计算各条件通过数
       let ma5PassCount = 0, ma5FailCount = 0, ma5NoDataCount = 0;
       let ma20PassCount = 0, ma20FailCount = 0, ma20NoDataCount = 0;
       let macdPassCount = 0, macdFailCount = 0, macdNoDataCount = 0;
       
-      // 计算技术面全部通过的股票
+      // 从基本面筛选后的候选池中计算技术面通过情况
+      // 与meetsAllRules逻辑保持一致：无数据时不淘汰
       const technicalPassResults = scanResults.filter(s => {
         let allPass = true;
+        let anyChecked = false; // 是否有任何条件被检查
         const techData = technicalDataMap.get(s.code);
         
+        // MA5
         if (rules.priceAboveMA5) {
-          if (!techData?.ma5 || techData.ma5 <= 0) { ma5NoDataCount++; allPass = false; }
+          anyChecked = true;
+          if (!techData?.ma5 || techData.ma5 <= 0) { ma5NoDataCount++; /* 无数据不淘汰 */ }
           else if (s.price > techData.ma5) { ma5PassCount++; }
           else { ma5FailCount++; allPass = false; }
         }
         
+        // MA20
         if (rules.priceAboveMA20) {
-          if (!techData?.ma20 || techData.ma20 <= 0) { ma20NoDataCount++; allPass = false; }
+          anyChecked = true;
+          if (!techData?.ma20 || techData.ma20 <= 0) { ma20NoDataCount++; /* 无数据不淘汰 */ }
           else if (s.price > techData.ma20) { ma20PassCount++; }
           else { ma20FailCount++; allPass = false; }
         }
         
+        // 周MACD金叉
         if (rules.weeklyMACDGoldenCross) {
-          if (techData?.weeklyMACDGoldenCross === undefined) { macdNoDataCount++; allPass = false; }
+          anyChecked = true;
+          if (techData?.weeklyMACDGoldenCross === undefined) { macdNoDataCount++; /* 无数据不淘汰 */ }
           else if (techData.weeklyMACDGoldenCross) { macdPassCount++; }
           else { macdFailCount++; allPass = false; }
         }
@@ -888,85 +862,110 @@ export async function GET(request: NextRequest) {
       
       const technicalPassCount = technicalPassResults.length;
       
-      // 构建明细
+      // 构建条件描述
       const details: string[] = [];
-      if (rules.priceAboveMA5) {
-        let p = `${ma5PassCount}通过`;
-        if (ma5FailCount > 0) p += `/${ma5FailCount}不通过`;
-        if (ma5NoDataCount > 0) p += `/${ma5NoDataCount}无数据`;
-        details.push(p);
-      }
-      if (rules.priceAboveMA20) {
-        let p = `${ma20PassCount}通过`;
-        if (ma20FailCount > 0) p += `/${ma20FailCount}不通过`;
-        if (ma20NoDataCount > 0) p += `/${ma20NoDataCount}无数据`;
-        details.push(p);
-      }
-      if (rules.weeklyMACDGoldenCross) {
-        let p = `${macdPassCount}通过`;
-        if (macdFailCount > 0) p += `/${macdFailCount}不通过`;
-        if (macdNoDataCount > 0) p += `/${macdNoDataCount}无数据`;
-        details.push(p);
-      }
+      if (rules.priceAboveMA5) details.push(`股价>MA5`);
+      if (rules.priceAboveMA20) details.push(`股价>MA20`);
+      if (rules.weeklyMACDGoldenCross) details.push(`周线MACD金叉`);
       
       funnelSteps.push({
         label: '技术面筛选',
         count: technicalPassCount,
-        filter: details.join('；'),
+        filter: details.join('、'),
       });
+      
+      // 漏斗步骤3: 资金面筛选
+      // 资金面条件：换手率、量比、板块涨幅
+      const hasCapitalRules = (rules.minTurnoverRate && rules.minTurnoverRate > 0) || (rules.minVolumeRatio && rules.minVolumeRatio > 0) || (rules.minSectorGain && rules.minSectorGain > 0);
+      if (hasCapitalRules) {
+        let turnoverPassCount = 0, turnoverFailCount = 0;
+        let volumeRatioPassCount = 0, volumeRatioFailCount = 0;
+        let sectorPassCount = 0, sectorFailCount = 0, sectorNoDataCount = 0;
+        
+        // 从技术面筛选后的股票中计算资金面通过情况
+        const capitalPassResults = technicalPassResults.filter(s => {
+          let allPass = true;
+          
+          // 换手率（资金活跃度指标）
+          if (rules.minTurnoverRate && rules.minTurnoverRate > 0) {
+            if (s.turnoverRate && s.turnoverRate >= rules.minTurnoverRate!) { turnoverPassCount++; }
+            else { turnoverFailCount++; allPass = false; }
+          }
+          
+          // 量比（资金相对强度指标）
+          if (rules.minVolumeRatio && rules.minVolumeRatio > 0) {
+            if (s.volumeRatio >= rules.minVolumeRatio!) { volumeRatioPassCount++; }
+            else { volumeRatioFailCount++; allPass = false; }
+          }
+          
+          // 板块涨幅（资金流向/题材热度指标）
+          // 注意：无数据时不作为硬性淘汰（与技术面筛选逻辑保持一致）
+          if (rules.minSectorGain && rules.minSectorGain > 0) {
+            const sectorData = sectorGainMap.get(s.code);
+            if (!sectorData) { 
+              sectorNoDataCount++; 
+              // 无板块数据时不淘汰，与技术面筛选保持一致
+            } else if (sectorData.gain >= rules.minSectorGain!) { 
+              sectorPassCount++; 
+            } else { 
+              sectorFailCount++; 
+              // 板块涨幅不足时不淘汰，作为参考指标而非硬过滤
+            }
+          }
+          
+          return allPass;
+        });
+        
+        const capitalPassCount = capitalPassResults.length;
+        
+        // 构建条件描述
+        const capitalDetails: string[] = [];
+        if (rules.minTurnoverRate && rules.minTurnoverRate > 0) capitalDetails.push(`换手率≥${rules.minTurnoverRate}%`);
+        if (rules.minVolumeRatio && rules.minVolumeRatio > 0) capitalDetails.push(`量比≥${rules.minVolumeRatio}`);
+        if (rules.minSectorGain && rules.minSectorGain > 0) capitalDetails.push(`板块涨幅≥${rules.minSectorGain}%`);
+        
+        funnelSteps.push({
+          label: '资金面筛选',
+          count: capitalPassCount,
+          filter: capitalDetails.join('、'),
+        });
+      }
     }
     
-    // 漏斗：板块涨幅筛选（当设置了minSectorGain时）
-    if (rules.minSectorGain && rules.minSectorGain > 0 && sectorGainMap.size > 0) {
-      let sectorPassCount = 0, sectorFailCount = 0, sectorNoDataCount = 0;
-      
-      const sectorPassResults = scanResults.filter(s => {
-        const sectorData = sectorGainMap.get(s.code);
-        if (!sectorData) { sectorNoDataCount++; return false; }
-        if (sectorData.gain >= rules.minSectorGain!) { sectorPassCount++; return true; }
-        sectorFailCount++;
-        return false;
-      });
-      
-      const details: string[] = [];
-      details.push(`${sectorPassCount}通过`);
-      if (sectorFailCount > 0) details.push(`${sectorFailCount}不通过`);
-      if (sectorNoDataCount > 0) details.push(`${sectorNoDataCount}无数据`);
-      
-      funnelSteps.push({
-        label: '板块涨幅筛选',
-        count: sectorPassResults.length,
-        filter: `板块涨幅≥${rules.minSectorGain}%（${details.join('、')}）`,
-      });
-    }
-    
-    // 漏斗：符合选股规则 + 买入信号（合并为结果步骤）
-    const buySignalCount = scanResults.filter(s => s.buySignal?.trigger).length;
-    
-    // 只有当"符合选股规则"数量与技术面筛选不同时才添加此步骤
+    // 漏斗步骤4: 符合选股规则 + 买入信号
+    // 直接使用 scanResults，meetsRules 已在前面正确计算
+    // 避免与 funnel 阶段的过滤逻辑重复/不一致
     const lastFunnelStep = funnelSteps[funnelSteps.length - 1];
     const lastFunnelCount = lastFunnelStep ? lastFunnelStep.count : candidateCodes.length;
     
-    if (matchCount < lastFunnelCount) {
-      // 选股规则有实际过滤效果
+    // 符合选股规则 = meetsRules 为 true 的股票
+    const matchCountFromLastStep = scanResults.filter(s => s.meetsRules).length;
+    const buySignalCount = scanResults.filter(s => s.buySignal?.trigger).length;
+    const analyzedCount = scanResults.filter(s => s.buySignal !== undefined).length;
+    
+    if (matchCountFromLastStep < lastFunnelCount) {
       const resultLabel = buySignalCount > 0 
-        ? `符合选股规则（${buySignalCount}只买入信号）`
+        ? `符合选股规则（${buySignalCount}只触发买入信号）`
         : '符合选股规则';
+      
+      const filterParts: string[] = [];
+      if (selectionRules.length > 0) {
+        filterParts.push(`${selectionRules.length}项选股规则`);
+      }
+      if (buySignalCount > 0) {
+        filterParts.push(`${buySignalCount}只触发买入信号（检测${analyzedCount}只）`);
+      }
+      
       funnelSteps.push({
         label: resultLabel,
-        count: matchCount,
-        filter: buySignalCount > 0 
-          ? `${buySignalCount}只触发买入信号（${buyRuleFilters.join('、')}）`
-          : selectionRules.length > 0 
-            ? `通过${selectionRules.length}项选股规则`
-            : '通过选股规则',
+        count: matchCountFromLastStep,
+        filter: filterParts.join('，'),
       });
     } else if (buySignalCount > 0) {
-      // 选股规则无过滤，但有买入信号
       funnelSteps.push({
-        label: `符合选股规则（${buySignalCount}只买入信号）`,
-        count: matchCount,
-        filter: `${buySignalCount}只触发买入信号（${buyRuleFilters.join('、')}）`,
+        label: `符合选股规则（${buySignalCount}只触发买入信号）`,
+        count: matchCountFromLastStep,
+        filter: `${buySignalCount}只触发买入信号（检测${analyzedCount}只）`,
       });
     }
     
@@ -981,9 +980,10 @@ export async function GET(request: NextRequest) {
         rules,
         ruleDescriptions,
         poolSource,
+        poolError,
         tushareConfigured: isTushareConfigured(),
         scanTime: new Date().toISOString(),
-        note: buildScanNote(poolSource, scanResults.length, matchCount, financeMap.size),
+        note: buildScanNote(poolSource, scanResults.length, matchCount, financeMap.size, poolError),
         funnel: funnelSteps,
       },
       timestamp: Date.now(),
@@ -1016,10 +1016,10 @@ function buildRuleDescriptions(rules: StrategyRules): string[] {
   return descs;
 }
 
-function buildScanNote(poolSource: string, total: number, matchCount: number, financeCount: number): string {
-  const sourceDesc = {
+function buildScanNote(poolSource: string, total: number, matchCount: number, financeCount: number, poolError?: string): string {
+  const sourceDesc: Record<string, string> = {
     'tushare-full-market': 'Tushare全市场',
-    'default-pool': '默认股票池',
   };
-  return `${sourceDesc[poolSource] || poolSource}，扫描 ${total} 只，${financeCount} 只有财务数据，${matchCount} 只符合规则`;
+  const base = `${sourceDesc[poolSource] || poolSource}，扫描 ${total} 只，${financeCount} 只有财务数据，${matchCount} 只符合规则`;
+  return poolError ? `${base}⚠️ ${poolError}` : base;
 }
