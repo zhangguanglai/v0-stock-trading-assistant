@@ -3,9 +3,9 @@
 
 import type { DailyKLine, ApiResponse, StockInfo } from './types';
 
-const TUSHARE_API_URL = 'http://api.tushare.pro';
-const FETCH_TIMEOUT_MS = 30000;
-const MAX_RETRIES = 2;
+const TUSHARE_API_URL = 'https://api.tushare.pro'; // 修复: 使用 HTTPS，避免云环境 HTTP 限制
+const FETCH_TIMEOUT_MS = 60000; // 修复: 超时从 30s 延长到 60s（全市场数据查询较慢）
+const MAX_RETRIES = 3; // 修复: 重试次数从 2 增加到 3
 
 // Tushare API请求（带超时和重试）
 export async function tushareRequest<T>(
@@ -14,7 +14,7 @@ export async function tushareRequest<T>(
   fields?: string
 ): Promise<ApiResponse<T>> {
   const token = process.env.TUSHARE_TOKEN;
-  
+
   if (!token) {
     return {
       success: false,
@@ -22,46 +22,48 @@ export async function tushareRequest<T>(
       timestamp: Date.now(),
     };
   }
-  
+
   let lastError: Error | null = null;
-  
+
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-      
+
       const response = await fetch(TUSHARE_API_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal: controller.signal,
         body: JSON.stringify({ api_name: apiName, token, params, fields }),
       });
-      
+
       clearTimeout(timeoutId);
-      
+
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
       }
-      
+
       const result = await response.json();
-      
+
       if (result.code !== 0) {
         return { success: false, error: result.msg || 'Tushare API错误', timestamp: Date.now() };
       }
-      
+
       return { success: true, data: result.data as T, timestamp: Date.now() };
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
       const isAbort = lastError.name === 'AbortError';
       const errMsg = isAbort ? '请求超时' : lastError.message;
-      
+
       if (attempt < MAX_RETRIES) {
-        console.warn(`[Tushare] ${apiName} 第${attempt + 1}次失败 (${errMsg})，重试中...`);
-        await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+        // 修复: 指数退避重试间隔 2s, 4s, 8s
+        const delayMs = 2000 * Math.pow(2, attempt);
+        console.warn(`[Tushare] ${apiName} 第${attempt + 1}次失败 (${errMsg})，${delayMs}ms后重试...`);
+        await new Promise(r => setTimeout(r, delayMs));
       }
     }
   }
-  
+
   return {
     success: false,
     error: lastError?.message || 'Tushare请求失败',
