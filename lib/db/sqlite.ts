@@ -1,40 +1,33 @@
 // SQLite 本地数据库管理
-// 使用 sqlite3 (纯JavaScript版本，无需编译)
+// 使用 Node.js 22+ 内置的 node:sqlite（无需任何外部原生依赖）
 
-import sqlite3 from 'sqlite3';
-import { open, Database } from 'sqlite';
+import { DatabaseSync } from 'node:sqlite';
 import path from 'path';
 import fs from 'fs';
 
 const DB_DIR = path.join(process.cwd(), 'data');
 const DB_PATH = path.join(DB_DIR, 'stock-history.db');
 
-let db: Database<sqlite3.Database, sqlite3.Statement> | null = null;
+let db: DatabaseSync | null = null;
 
 // 获取数据库实例（单例）
-export async function getDatabase(): Promise<Database<sqlite3.Database, sqlite3.Statement>> {
+export function getDatabase(): DatabaseSync {
   if (!db) {
-    // 确保目录存在
     if (!fs.existsSync(DB_DIR)) {
       fs.mkdirSync(DB_DIR, { recursive: true });
     }
-    
-    db = await open({
-      filename: DB_PATH,
-      driver: sqlite3.Database,
-    });
-    
-    await initTables();
+
+    db = new DatabaseSync(DB_PATH);
+    initTables();
   }
   return db;
 }
 
 // 初始化表结构
-async function initTables() {
+function initTables() {
   const database = db!;
-  
-  // 日线K线数据表
-  await database.exec(`
+
+  database.exec(`
     CREATE TABLE IF NOT EXISTS daily_kline (
       code TEXT NOT NULL,
       date TEXT NOT NULL,
@@ -48,9 +41,8 @@ async function initTables() {
       PRIMARY KEY (code, date)
     )
   `);
-  
-  // 每日基本面数据表
-  await database.exec(`
+
+  database.exec(`
     CREATE TABLE IF NOT EXISTS daily_basic (
       code TEXT NOT NULL,
       date TEXT NOT NULL,
@@ -62,18 +54,16 @@ async function initTables() {
       PRIMARY KEY (code, date)
     )
   `);
-  
-  // 数据更新记录表
-  await database.exec(`
+
+  database.exec(`
     CREATE TABLE IF NOT EXISTS update_log (
       table_name TEXT PRIMARY KEY,
       last_update TEXT,
       record_count INTEGER
     )
   `);
-  
-  // 创建索引优化查询性能
-  await database.exec(`
+
+  database.exec(`
     CREATE INDEX IF NOT EXISTS idx_kline_code_date ON daily_kline(code, date);
     CREATE INDEX IF NOT EXISTS idx_kline_date ON daily_kline(date);
     CREATE INDEX IF NOT EXISTS idx_basic_code_date ON daily_basic(code, date);
@@ -82,7 +72,7 @@ async function initTables() {
 }
 
 // 批量插入K线数据
-export async function insertKlineBatch(data: {
+export function insertKlineBatch(data: {
   code: string;
   date: string;
   open: number;
@@ -92,16 +82,16 @@ export async function insertKlineBatch(data: {
   volume: number;
   amount: number;
   changePercent: number;
-}[]): Promise<number> {
-  const database = await getDatabase();
-  
-  const stmt = await database.prepare(`
+}[]): number {
+  const database = getDatabase();
+
+  const insert = database.prepare(`
     INSERT OR REPLACE INTO daily_kline (code, date, open, high, low, close, volume, amount, change_percent)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
-  
+
   for (const item of data) {
-    await stmt.run(
+    insert.run(
       item.code,
       item.date,
       item.open,
@@ -113,13 +103,12 @@ export async function insertKlineBatch(data: {
       item.changePercent
     );
   }
-  
-  await stmt.finalize();
+
   return data.length;
 }
 
 // 批量插入基本面数据
-export async function insertBasicBatch(data: {
+export function insertBasicBatch(data: {
   code: string;
   date: string;
   marketCap: number;
@@ -127,16 +116,16 @@ export async function insertBasicBatch(data: {
   pb: number;
   turnoverRate: number;
   volumeRatio: number;
-}[]): Promise<number> {
-  const database = await getDatabase();
-  
-  const stmt = await database.prepare(`
+}[]): number {
+  const database = getDatabase();
+
+  const insert = database.prepare(`
     INSERT OR REPLACE INTO daily_basic (code, date, market_cap, pe, pb, turnover_rate, volume_ratio)
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `);
-  
+
   for (const item of data) {
-    await stmt.run(
+    insert.run(
       item.code,
       item.date,
       item.marketCap,
@@ -146,17 +135,16 @@ export async function insertBasicBatch(data: {
       item.volumeRatio
     );
   }
-  
-  await stmt.finalize();
+
   return data.length;
 }
 
 // 查询单只股票历史K线
-export async function getKlineHistory(
+export function getKlineHistory(
   code: string,
   startDate: string,
   endDate: string
-): Promise<{
+): {
   date: string;
   open: number;
   high: number;
@@ -165,19 +153,30 @@ export async function getKlineHistory(
   volume: number;
   amount: number;
   changePercent: number;
-}[]> {
-  const database = await getDatabase();
-  
-  return database.all(`
+}[] {
+  const database = getDatabase();
+
+  const stmt = database.prepare(`
     SELECT date, open, high, low, close, volume, amount, change_percent as changePercent
     FROM daily_kline
     WHERE code = ? AND date >= ? AND date <= ?
     ORDER BY date ASC
-  `, code, startDate, endDate);
+  `);
+
+  return stmt.all(code, startDate, endDate) as {
+    date: string;
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    volume: number;
+    amount: number;
+    changePercent: number;
+  }[];
 }
 
 // 查询某日期全市场数据
-export async function getMarketDataByDate(date: string): Promise<{
+export function getMarketDataByDate(date: string): {
   code: string;
   open: number;
   high: number;
@@ -191,11 +190,11 @@ export async function getMarketDataByDate(date: string): Promise<{
   pb?: number;
   turnoverRate?: number;
   volumeRatio?: number;
-}[]> {
-  const database = await getDatabase();
-  
-  return database.all(`
-    SELECT 
+}[] {
+  const database = getDatabase();
+
+  const stmt = database.prepare(`
+    SELECT
       k.code,
       k.open,
       k.high,
@@ -212,21 +211,37 @@ export async function getMarketDataByDate(date: string): Promise<{
     FROM daily_kline k
     LEFT JOIN daily_basic b ON k.code = b.code AND k.date = b.date
     WHERE k.date = ?
-  `, date);
+  `);
+
+  return stmt.all(date) as {
+    code: string;
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    volume: number;
+    amount: number;
+    changePercent: number;
+    marketCap?: number;
+    pe?: number;
+    pb?: number;
+    turnoverRate?: number;
+    volumeRatio?: number;
+  }[];
 }
 
 // 获取数据库统计信息
-export async function getDbStats(): Promise<{
+export function getDbStats(): {
   klineCount: number;
   basicCount: number;
   dateRange: { min: string; max: string };
-}> {
-  const database = await getDatabase();
-  
-  const klineResult = await database.get('SELECT COUNT(*) as count FROM daily_kline');
-  const basicResult = await database.get('SELECT COUNT(*) as count FROM daily_basic');
-  const dateRange = await database.get('SELECT MIN(date) as min, MAX(date) as max FROM daily_kline');
-  
+} {
+  const database = getDatabase();
+
+  const klineResult = database.prepare('SELECT COUNT(*) as count FROM daily_kline').get() as { count: number };
+  const basicResult = database.prepare('SELECT COUNT(*) as count FROM daily_basic').get() as { count: number };
+  const dateRange = database.prepare('SELECT MIN(date) as min, MAX(date) as max FROM daily_kline').get() as { min: string; max: string };
+
   return {
     klineCount: klineResult?.count || 0,
     basicCount: basicResult?.count || 0,
@@ -238,17 +253,17 @@ export async function getDbStats(): Promise<{
 }
 
 // 更新记录
-export async function updateLog(tableName: string, date: string, count: number) {
-  const database = await getDatabase();
-  await database.run(`
+export function updateLog(tableName: string, date: string, count: number) {
+  const database = getDatabase();
+  database.prepare(`
     INSERT OR REPLACE INTO update_log (table_name, last_update, record_count)
     VALUES (?, ?, ?)
-  `, tableName, date, count);
+  `).run(tableName, date, count);
 }
 
 // 获取上次更新时间
-export async function getLastUpdate(tableName: string): Promise<string | null> {
-  const database = await getDatabase();
-  const row = await database.get('SELECT last_update FROM update_log WHERE table_name = ?', tableName);
+export function getLastUpdate(tableName: string): string | null {
+  const database = getDatabase();
+  const row = database.prepare('SELECT last_update FROM update_log WHERE table_name = ?').get(tableName) as { last_update: string } | undefined;
   return row?.last_update || null;
 }

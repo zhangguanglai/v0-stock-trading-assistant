@@ -4,7 +4,7 @@
 import type { DailyKLine, ApiResponse, StockInfo } from './types';
 
 const TUSHARE_API_URL = 'http://api.tushare.pro';
-const FETCH_TIMEOUT_MS = 15000;
+const FETCH_TIMEOUT_MS = 30000;
 const MAX_RETRIES = 2;
 
 // Tushare API请求（带超时和重试）
