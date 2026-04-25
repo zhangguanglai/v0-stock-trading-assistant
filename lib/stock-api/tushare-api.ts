@@ -307,7 +307,7 @@ export async function getAllDailyBasic(): Promise<ApiResponse<{
   changePercent: number;  // 涨跌幅
 }[]>> {
   // 检查缓存是否有效（基于交易日判断）
-  const CACHE_VERSION = 'v4'; // 修复: daily_basic 应返回全市场 ~5000+ 只
+  const CACHE_VERSION = 'v5'; // 修复: 改用 daily_basic 获取 turnover_rate/volume_ratio
   if (allDailyBasicCache && 
       allDailyBasicCache._version === CACHE_VERSION && 
       !isCacheExpired(allDailyBasicCache.tradeDate)) {
@@ -321,6 +321,7 @@ export async function getAllDailyBasic(): Promise<ApiResponse<{
 
   console.log('[getAllDailyBasic] 缓存未命中或已过期，请求Tushare API...');
 
+  // 修复: bak_daily 不返回 turnover_rate/volume_ratio，改用 daily_basic 获取资金面数据
   // daily_basic 接口规则：ts_code 和 trade_date 二选一必选
   // 不传 ts_code + 传 trade_date = 获取全市场当日数据（~5000+只）
   // 尝试最近5个交易日
@@ -329,49 +330,86 @@ export async function getAllDailyBasic(): Promise<ApiResponse<{
     tradeDate.setDate(tradeDate.getDate() - daysBack);
     const dateStr = tradeDate.toISOString().slice(0, 10).replace(/-/g, '');
 
-    // 使用 bak_daily 接口获取数据（包含涨跌幅 pct_change）
-    const result = await tushareRequest<{
-      fields: string[];
-      items: (string | number | null)[][];
-    }>('bak_daily', {
-      trade_date: dateStr,
-    }, 'ts_code,name,close,pct_change,turnover_rate,volume_ratio,pe,pb,total_mv,circ_mv');
+    // 并行请求 daily_basic（资金面数据：换手率、量比）和 bak_daily（名称、收盘价、涨跌幅）
+    const [dailyBasicResult, bakDailyResult] = await Promise.all([
+      tushareRequest<{
+        fields: string[];
+        items: (string | number | null)[][];
+      }>('daily_basic', {
+        trade_date: dateStr,
+      }, 'ts_code,turnover_rate,volume_ratio,pe,pb,total_mv,circ_mv'),
+      tushareRequest<{
+        fields: string[];
+        items: (string | number | null)[][];
+      }>('bak_daily', {
+        trade_date: dateStr,
+      }, 'ts_code,name,close,pct_change,total_mv'),
+    ]);
 
-    if (result.success && result.data && result.data.items && result.data.items.length > 0) {
-      const fields = result.data.fields || [];
-      console.log(`[getAllDailyBasic] bak_daily 返回字段: ${fields.join(',')}`);
-      const getFieldIndex = (name: string) => fields.indexOf(name);
-      const tsIdx = getFieldIndex('ts_code');
-      const nameIdx = getFieldIndex('name');
-      const closeIdx = getFieldIndex('close');
-      const pctChgIdx = getFieldIndex('pct_change');
-      const trIdx = getFieldIndex('turnover_rate');
-      const vrIdx = getFieldIndex('volume_ratio');
-      const peIdx = getFieldIndex('pe');
-      const pbIdx = getFieldIndex('pb');
-      const mvIdx = getFieldIndex('total_mv');
-      const circIdx = getFieldIndex('circ_mv');
-      
-      // 打印第一条数据用于调试
-      if (result.data.items.length > 0) {
-        const firstItem = result.data.items[0];
-        console.log(`[getAllDailyBasic] 第一条数据: ts_code=${firstItem[tsIdx]}, name=${firstItem[nameIdx]}, close=${firstItem[closeIdx]}, pct_change=${firstItem[pctChgIdx]}, total_mv=${firstItem[mvIdx]}`);
+    if (dailyBasicResult.success && dailyBasicResult.data && dailyBasicResult.data.items && dailyBasicResult.data.items.length > 0) {
+      const dbFields = dailyBasicResult.data.fields || [];
+      const bkFields = bakDailyResult.success && bakDailyResult.data ? bakDailyResult.data.fields || [] : [];
+
+      console.log(`[getAllDailyBasic] daily_basic 返回字段: ${dbFields.join(',')}, 条数: ${dailyBasicResult.data.items.length}`);
+      if (bakDailyResult.success && bakDailyResult.data) {
+        console.log(`[getAllDailyBasic] bak_daily 返回字段: ${bkFields.join(',')}, 条数: ${bakDailyResult.data.items.length}`);
       }
 
-      const basicData = result.data.items.map((item) => {
-        const tsCode = String(item[tsIdx] || '');
+      const getDbIdx = (name: string) => dbFields.indexOf(name);
+      const getBkIdx = (name: string) => bkFields.indexOf(name);
+
+      const dbTsIdx = getDbIdx('ts_code');
+      const dbTrIdx = getDbIdx('turnover_rate');
+      const dbVrIdx = getDbIdx('volume_ratio');
+      const dbPeIdx = getDbIdx('pe');
+      const dbPbIdx = getDbIdx('pb');
+      const dbMvIdx = getDbIdx('total_mv');
+      const dbCircIdx = getDbIdx('circ_mv');
+
+      const bkTsIdx = getBkIdx('ts_code');
+      const bkNameIdx = getBkIdx('name');
+      const bkCloseIdx = getBkIdx('close');
+      const bkPctChgIdx = getBkIdx('pct_change');
+
+      // 构建 bak_daily 映射表（用于补充 name/close/changePercent）
+      const bakDailyMap = new Map<string, { name: string; close: number; changePercent: number }>();
+      if (bakDailyResult.success && bakDailyResult.data && bakDailyResult.data.items) {
+        for (const item of bakDailyResult.data.items) {
+          const tsCode = bkTsIdx >= 0 ? String(item[bkTsIdx] || '') : '';
+          if (!tsCode) continue;
+          const code = tsCode.split('.')[0];
+          bakDailyMap.set(code, {
+            name: bkNameIdx >= 0 ? String(item[bkNameIdx] || '') : '',
+            close: bkCloseIdx >= 0 ? Number(item[bkCloseIdx] || 0) : 0,
+            changePercent: bkPctChgIdx >= 0 ? Number(item[bkPctChgIdx] || 0) : 0,
+          });
+        }
+      }
+
+      // 打印第一条数据用于调试
+      if (dailyBasicResult.data.items.length > 0) {
+        const firstItem = dailyBasicResult.data.items[0];
+        const tsCode = dbTsIdx >= 0 ? String(firstItem[dbTsIdx] || '') : '';
         const code = tsCode.split('.')[0];
+        const bkData = bakDailyMap.get(code);
+        console.log(`[getAllDailyBasic] 第一条数据: ts_code=${tsCode}, turnover_rate=${firstItem[dbTrIdx]}, volume_ratio=${firstItem[dbVrIdx]}, total_mv=${firstItem[dbMvIdx]}, name=${bkData?.name || ''}`);
+      }
+
+      const basicData = dailyBasicResult.data.items.map((item) => {
+        const tsCode = dbTsIdx >= 0 ? String(item[dbTsIdx] || '') : '';
+        const code = tsCode.split('.')[0];
+        const bkData = bakDailyMap.get(code);
         return {
           code,
-          name: nameIdx >= 0 ? String(item[nameIdx] || '') : '',
-          marketCap: mvIdx >= 0 ? Number(item[mvIdx] || 0) / 10000 : 0,
-          circulatingCap: circIdx >= 0 ? Number(item[circIdx] || 0) / 10000 : 0,
-          pe: peIdx >= 0 ? Number(item[peIdx] || 0) : 0,
-          pb: pbIdx >= 0 ? Number(item[pbIdx] || 0) : 0,
-          turnoverRate: trIdx >= 0 ? Number(item[trIdx] || 0) : 0,
-          volumeRatio: vrIdx >= 0 ? Number(item[vrIdx] || 1) : 1,
-          close: closeIdx >= 0 ? Number(item[closeIdx] || 0) : 0,
-          changePercent: pctChgIdx >= 0 ? Number(item[pctChgIdx] || 0) : 0,
+          name: bkData?.name || '',
+          marketCap: dbMvIdx >= 0 ? Number(item[dbMvIdx] || 0) / 10000 : 0,
+          circulatingCap: dbCircIdx >= 0 ? Number(item[dbCircIdx] || 0) / 10000 : 0,
+          pe: dbPeIdx >= 0 ? Number(item[dbPeIdx] || 0) : 0,
+          pb: dbPbIdx >= 0 ? Number(item[dbPbIdx] || 0) : 0,
+          turnoverRate: dbTrIdx >= 0 ? Number(item[dbTrIdx] || 0) : 0,
+          volumeRatio: dbVrIdx >= 0 ? Number(item[dbVrIdx] || 1) : 1,
+          close: bkData?.close || 0,
+          changePercent: bkData?.changePercent || 0,
         };
       });
 
