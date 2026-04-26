@@ -2,13 +2,14 @@
 // 基于本地SQLite历史数据执行策略规则，计算回测指标
 
 import { NextRequest, NextResponse } from 'next/server';
-import { getMarketDataByDate, getKlineHistory, getDatabase } from '@/lib/db/sqlite';
+import { getMarketDataByDate, getKlineHistory, getDatabase, getStockName } from '@/lib/db/sqlite';
 import type { BacktestParams, BacktestResult, BacktestTrade, EquityPoint } from '@/lib/types';
 import { checkStockRules, type FilterContext } from '@/lib/stock-scan/filter-engine';
 
 export const dynamic = 'force-dynamic';
 
 interface StrategyRules {
+  // 选股规则
   maxMarketCap?: number;
   minMarketCap?: number;
   minROE?: number;
@@ -24,6 +25,16 @@ interface StrategyRules {
   priceAboveMA20?: boolean;
   weeklyMACDGoldenCross?: boolean;
   minSectorGain?: number;
+  // 卖出规则
+  stopLossPercent?: number;
+  takeProfitPercent?: number;
+  trailingStopPercent?: number;
+  timeStopDays?: number;
+  timeStopMinGain?: number;
+  // 资金管理规则
+  maxPositions?: number;
+  maxSingleStockPercent?: number;
+  minCashPercent?: number;
 }
 
 interface Position {
@@ -37,15 +48,30 @@ interface Position {
   highestPrice: number;
 }
 
-// 获取日期范围内的所有交易日
+// 获取日期范围内的所有交易日（从数据库查询实际有数据的日期）
 function getTradeDates(startDate: string, endDate: string): string[] {
-  const dates: string[] = [];
-  const start = new Date(startDate);
-  const end = new Date(endDate);
+  const database = getDatabase();
+  const start = startDate.replace(/-/g, '');
+  const end = endDate.replace(/-/g, '');
   
-  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+  // 从 daily_kline 表查询实际有数据的日期
+  const rows = database.prepare(
+    `SELECT DISTINCT date FROM daily_kline WHERE date >= ? AND date <= ? ORDER BY date`
+  ).all(start, end) as { date: string }[];
+  
+  if (rows.length > 0) {
+    return rows.map(r => r.date);
+  }
+  
+  // 数据库无数据时降级为排除周末
+  console.warn('[Backtest] 数据库中无数据，降级为排除周末的日期列表');
+  const dates: string[] = [];
+  const startD = new Date(startDate);
+  const endD = new Date(endDate);
+  
+  for (let d = new Date(startD); d <= endD; d.setDate(d.getDate() + 1)) {
     const day = d.getDay();
-    if (day !== 0 && day !== 6) { // 排除周末
+    if (day !== 0 && day !== 6) {
       dates.push(d.toISOString().slice(0, 10).replace(/-/g, ''));
     }
   }
@@ -118,7 +144,7 @@ async function runBacktest(
     const marketData = getMarketDataByDate(date);
     const dailyDataMap = new Map(marketData.map(d => [d.code, d]));
     
-    // 1. 检查持仓（止盈止损）
+    // 1. 检查持仓（止盈止损）- 使用策略配置的卖出规则
     const remainingPositions: Position[] = [];
     for (const pos of positions) {
       const data = dailyDataMap.get(pos.code);
@@ -130,22 +156,44 @@ async function runBacktest(
       const currentPrice = data.close;
       pos.highestPrice = Math.max(pos.highestPrice, currentPrice);
       
-      // 检查止损
-      const stopLossTriggered = currentPrice <= pos.stopLossPrice;
-      // 检查止盈
-      const takeProfitTriggered = currentPrice >= pos.takeProfitPrice;
-      // 检查时间止损（持有超过20天）
-      const holdingDays = i - tradeDates.indexOf(pos.entryDate.replace(/-/g, ''));
-      const timeStopTriggered = holdingDays >= 20;
+      // 从策略配置读取卖出规则（有默认值）
+      const stopLossPercent = rules.stopLossPercent ?? 8;
+      const takeProfitPercent = rules.takeProfitPercent ?? 15;
+      const trailingStopPercent = rules.trailingStopPercent ?? 5;
+      const timeStopDays = rules.timeStopDays ?? 20;
+      const timeStopMinGain = rules.timeStopMinGain ?? 3;
       
-      if (stopLossTriggered || takeProfitTriggered || timeStopTriggered) {
-        // 卖出
-        const sellAmount = currentPrice * pos.shares;
+      // 动态计算止损/止盈价格（首次计算或更新）
+      const currentStopLoss = pos.entryPrice * (1 - stopLossPercent / 100);
+      const currentTakeProfit = pos.entryPrice * (1 + takeProfitPercent / 100);
+      
+      // 检查止损
+      const stopLossTriggered = currentPrice <= currentStopLoss;
+      // 检查止盈
+      const takeProfitTriggered = currentPrice >= currentTakeProfit;
+      // 检查移动止盈（从最高点回撤 trailingStopPercent%）
+      const trailingStopPrice = pos.highestPrice * (1 - trailingStopPercent / 100);
+      const trailingStopTriggered = currentPrice <= trailingStopPrice && currentPrice > pos.entryPrice;
+      // 检查时间止损（持有超过 timeStopDays 天且盈利低于 timeStopMinGain%）
+      const holdingDays = i - tradeDates.indexOf(pos.entryDate.replace(/-/g, ''));
+      const currentGainPercent = ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100;
+      const timeStopTriggered = holdingDays >= timeStopDays && currentGainPercent < timeStopMinGain;
+      
+      if (stopLossTriggered || takeProfitTriggered || trailingStopTriggered || timeStopTriggered) {
+        // 卖出（应用滑点）
+        const slippage = params.slippage || 0;
+        const sellPrice = currentPrice * (1 - slippage);
+        const sellAmount = sellPrice * pos.shares;
         const commission = sellAmount * params.commissionRate;
         cash += sellAmount - commission;
         
-        const profit = (currentPrice - pos.entryPrice) * pos.shares - commission;
-        const profitPercent = ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100;
+        const profit = (sellPrice - pos.entryPrice) * pos.shares - commission;
+        const profitPercent = ((sellPrice - pos.entryPrice) / pos.entryPrice) * 100;
+        
+        let signal = '时间止损';
+        if (stopLossTriggered) signal = '止损信号';
+        else if (takeProfitTriggered) signal = '止盈信号';
+        else if (trailingStopTriggered) signal = '移动止盈';
         
         trades.push({
           id: `trade-${trades.length + 1}`,
@@ -154,12 +202,12 @@ async function runBacktest(
           entryDate: pos.entryDate,
           exitDate: dateStr,
           entryPrice: pos.entryPrice,
-          exitPrice: currentPrice,
+          exitPrice: sellPrice,
           shares: pos.shares,
           profit,
           profitPercent,
           holdingPeriod: holdingDays,
-          signal: stopLossTriggered ? '止损信号' : takeProfitTriggered ? '止盈信号' : '时间止损',
+          signal,
         });
       } else {
         remainingPositions.push(pos);
@@ -220,8 +268,10 @@ async function runBacktest(
       }
     }
     
-    // 3. 买入（按评分排序，选择前N只）
-    const maxPositions = 5; // 最大持仓数
+    // 3. 买入（按评分排序，选择前N只）- 使用策略配置的资金管理规则
+    const maxPositions = rules.maxPositions ?? 5;
+    const maxSingleStockPercent = rules.maxSingleStockPercent ?? 20;
+    const minCashPercent = rules.minCashPercent ?? 10;
     const availableSlots = maxPositions - positions.length;
     
     if (availableSlots > 0 && candidates.length > 0) {
@@ -229,15 +279,29 @@ async function runBacktest(
       candidates.sort((a, b) => b.score - a.score);
       
       const selected = candidates.slice(0, availableSlots);
-      const positionSize = cash / (availableSlots + 1); // 预留部分现金
+      
+      // 计算单只股票最大仓位（基于总资金，不是剩余现金）
+      const totalEquity = cash + positions.reduce((sum, pos) => {
+        const data = dailyDataMap.get(pos.code);
+        return sum + (data ? data.close * pos.shares : pos.entryPrice * pos.shares);
+      }, 0);
+      const maxPositionValue = totalEquity * (maxSingleStockPercent / 100);
+      
+      // 预留最低现金比例
+      const minCash = totalEquity * (minCashPercent / 100);
+      const availableCash = Math.max(0, cash - minCash);
       
       for (const { data: stock } of selected) {
-        if (cash < positionSize * 1.1) break; // 保留10%缓冲
+        // 应用滑点
+        const slippage = params.slippage || 0;
+        const buyPrice = stock.close * (1 + slippage);
         
-        const shares = Math.floor(positionSize / stock.close / 100) * 100; // 100股整数
+        // 计算可买入金额（不超过单股上限和可用现金）
+        const maxBuyAmount = Math.min(maxPositionValue, availableCash / availableSlots);
+        const shares = Math.floor(maxBuyAmount / buyPrice / 100) * 100; // 100股整数
         if (shares < 100) continue;
         
-        const buyAmount = stock.close * shares;
+        const buyAmount = buyPrice * shares;
         const commission = buyAmount * params.commissionRate;
         
         if (cash < buyAmount + commission) continue;
@@ -246,13 +310,13 @@ async function runBacktest(
         
         positions.push({
           code: stock.code,
-          name: stock.code, // 本地数据库暂无名称，用代码代替
-          entryPrice: stock.close,
+          name: getStockName(stock.code), // 从数据库获取股票名称
+          entryPrice: buyPrice,
           shares,
           entryDate: dateStr,
-          stopLossPrice: stock.close * 0.92, // 8%止损
-          takeProfitPrice: stock.close * 1.15, // 15%止盈
-          highestPrice: stock.close,
+          stopLossPrice: 0, // 不再使用，改为动态计算
+          takeProfitPrice: 0, // 不再使用，改为动态计算
+          highestPrice: buyPrice,
         });
       }
     }

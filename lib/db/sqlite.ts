@@ -69,6 +69,39 @@ function initTables() {
     CREATE INDEX IF NOT EXISTS idx_basic_code_date ON daily_basic(code, date);
     CREATE INDEX IF NOT EXISTS idx_basic_date ON daily_basic(date);
   `);
+
+  // 股票名称映射表
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS stock_names (
+      code TEXT PRIMARY KEY,
+      name TEXT NOT NULL
+    )
+  `);
+}
+
+// 股票名称缓存
+const nameCache = new Map<string, string>();
+
+// 批量插入股票名称
+export function insertStockNames(data: { code: string; name: string }[]): void {
+  const database = getDatabase();
+  const insert = database.prepare('INSERT OR REPLACE INTO stock_names (code, name) VALUES (?, ?)');
+  for (const item of data) {
+    insert.run(item.code, item.name);
+    nameCache.set(item.code, item.name);
+  }
+}
+
+// 获取股票名称
+export function getStockName(code: string): string {
+  if (nameCache.has(code)) {
+    return nameCache.get(code)!;
+  }
+  const database = getDatabase();
+  const row = database.prepare('SELECT name FROM stock_names WHERE code = ?').get(code) as { name: string } | undefined;
+  const name = row?.name || code;
+  nameCache.set(code, name);
+  return name;
 }
 
 // 批量插入K线数据
@@ -266,4 +299,40 @@ export function getLastUpdate(tableName: string): string | null {
   const database = getDatabase();
   const row = database.prepare('SELECT last_update FROM update_log WHERE table_name = ?').get(tableName) as { last_update: string } | undefined;
   return row?.last_update || null;
+}
+
+// 回测结果记录
+export interface BacktestRecord {
+  id: number;
+  strategy_id: string;
+  strategy_name: string;
+  start_date: string;
+  end_date: string;
+  initial_capital: number;
+  final_capital: number;
+  total_return: number;
+  annualized_return: number;
+  max_drawdown: number;
+  sharpe_ratio: number;
+  win_rate: number;
+  total_trades: number;
+  created_at: string;
+}
+
+// 获取回测历史记录
+export function getBacktestHistory(limit: number = 50): BacktestRecord[] {
+  const database = getDatabase();
+  try {
+    return database.prepare(
+      `SELECT * FROM backtest_results ORDER BY created_at DESC LIMIT ?`
+    ).all(limit) as BacktestRecord[];
+  } catch {
+    return [];
+  }
+}
+
+// 删除回测记录
+export function deleteBacktestRecord(id: number): void {
+  const database = getDatabase();
+  database.prepare('DELETE FROM backtest_results WHERE id = ?').run(id);
 }

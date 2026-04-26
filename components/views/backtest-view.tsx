@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useMemo } from 'react';
-import { Calendar, Play, BarChart3, TrendingUp, AlertTriangle, Download, RefreshCw, Loader2 } from 'lucide-react';
+import { useState, useMemo, useEffect } from 'react';
+import { Calendar, Play, BarChart3, TrendingUp, AlertTriangle, Download, RefreshCw, Loader2, History, Trash2 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -17,20 +17,56 @@ import { ChartContainer, ChartTooltip, ChartTooltipContent, ChartLegend, ChartLe
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { toast } from 'sonner';
 
+interface BacktestRecord {
+  id: number;
+  strategy_id: string;
+  strategy_name: string;
+  start_date: string;
+  end_date: string;
+  initial_capital: number;
+  final_capital: number;
+  total_return: number;
+  annualized_return: number;
+  max_drawdown: number;
+  sharpe_ratio: number;
+  win_rate: number;
+  total_trades: number;
+  created_at: string;
+}
+
 export function BacktestView() {
   const { strategies, activeStrategyId } = useStockStore();
-  
+
   const [params, setParams] = useState<BacktestParams>({
     strategyId: activeStrategyId || '',
-    startDate: '2023-01-01',
+    startDate: '2024-01-01',
     endDate: new Date().toISOString().split('T')[0],
     initialCapital: 100000,
     commissionRate: 0.0003,
     slippage: 0.001,
   });
-  
+
   const [isRunning, setIsRunning] = useState(false);
   const [result, setResult] = useState<BacktestResult | null>(null);
+  const [history, setHistory] = useState<BacktestRecord[]>([]);
+  const [activeTab, setActiveTab] = useState('run');
+
+  // 加载回测历史
+  const loadHistory = async () => {
+    try {
+      const response = await fetch('/api/backtest/history?limit=20');
+      const data = await response.json();
+      if (data.success) {
+        setHistory(data.data);
+      }
+    } catch (error) {
+      console.error('加载回测历史失败:', error);
+    }
+  };
+
+  useEffect(() => {
+    loadHistory();
+  }, []);
   
   const activeStrategy = useMemo(
     () => strategies.find((s) => s.id === params.strategyId),
@@ -53,8 +89,9 @@ export function BacktestView() {
       }
       
       // 转换策略规则为回测格式
-      // 与策略配置的 stockRules 字段一一对应
+      // 选股规则
       const rules = {
+        // stockRules
         minMarketCap: strategy.stockRules?.minMarketCap,
         maxMarketCap: strategy.stockRules?.maxMarketCap,
         minROE: strategy.stockRules?.minROE,
@@ -66,6 +103,16 @@ export function BacktestView() {
         priceAboveMA5: strategy.stockRules?.priceAboveMA5,
         priceAboveMA20: strategy.stockRules?.priceAboveMA20,
         weeklyMACDGoldenCross: strategy.stockRules?.weeklyMACDGoldenCross,
+        // sellRules
+        stopLossPercent: strategy.sellRules?.stopLossPercent,
+        takeProfitPercent: strategy.sellRules?.takeProfitPercent,
+        trailingStopPercent: strategy.sellRules?.trailingStopPercent,
+        timeStopDays: strategy.sellRules?.timeStopDays,
+        timeStopMinGain: strategy.sellRules?.timeStopMinGain,
+        // moneyRules
+        maxPositions: strategy.moneyRules?.maxPositions,
+        maxSingleStockPercent: strategy.moneyRules?.maxSingleStockPercent,
+        minCashPercent: strategy.moneyRules?.minCashPercent,
       };
       
       // 调用真实回测API
@@ -84,11 +131,28 @@ export function BacktestView() {
       
       setResult(data.data);
       toast.success('回测完成');
+      // 刷新历史记录
+      loadHistory();
+      setActiveTab('result');
     } catch (error) {
       console.error('回测失败:', error);
       toast.error('回测失败，请稍后重试');
     } finally {
       setIsRunning(false);
+    }
+  };
+
+  // 删除回测记录
+  const handleDeleteRecord = async (id: number) => {
+    try {
+      const response = await fetch(`/api/backtest/history?id=${id}`, { method: 'DELETE' });
+      const data = await response.json();
+      if (data.success) {
+        toast.success('记录已删除');
+        loadHistory();
+      }
+    } catch (error) {
+      toast.error('删除失败');
     }
   };
   
@@ -189,6 +253,19 @@ export function BacktestView() {
       </header>
 
       <div className="flex-1 space-y-6 p-6">
+        <Tabs value={activeTab} onValueChange={setActiveTab}>
+          <TabsList className="mb-4">
+            <TabsTrigger value="run" className="gap-1">
+              <Play className="h-4 w-4" />
+              运行回测
+            </TabsTrigger>
+            <TabsTrigger value="history" className="gap-1">
+              <History className="h-4 w-4" />
+              历史记录
+            </TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="run" className="space-y-6 mt-0">
         {/* Backtest Parameters */}
         <Card>
           <CardHeader>
@@ -293,11 +370,20 @@ export function BacktestView() {
           </CardContent>
         </Card>
         
-        {/* Backtest Results */}
-        {result && (
-          <>
-            {/* Summary Stats */}
-            <div className="grid gap-4 md:grid-cols-4">
+          </TabsContent>
+
+          <TabsContent value="result" className="space-y-6 mt-0">
+            {/* Backtest Results */}
+            {result && (
+              <>
+                <div className="flex items-center justify-between">
+                  <h2 className="text-lg font-semibold">回测结果</h2>
+                  <Button variant="outline" size="sm" onClick={() => setActiveTab('run')}>
+                    返回参数
+                  </Button>
+                </div>
+                {/* Summary Stats */}
+                <div className="grid gap-4 md:grid-cols-4">
               <Card>
                 <CardHeader className="pb-2">
                   <CardTitle className="text-sm font-medium text-muted-foreground">
@@ -398,7 +484,22 @@ export function BacktestView() {
                     <CardTitle className="text-base">交易详情</CardTitle>
                     <CardDescription>回测期间的交易记录</CardDescription>
                   </div>
-                  <Button variant="outline" size="sm" className="gap-1">
+                  <Button variant="outline" size="sm" className="gap-1" onClick={() => {
+                    if (!result) return;
+                    const headers = ['股票代码', '股票名称', '买入日期', '卖出日期', '买入价', '卖出价', '股数', '收益', '收益率%', '持有天数', '信号'];
+                    const rows = result.trades.map(t => [
+                      t.stockCode, t.stockName, t.entryDate, t.exitDate,
+                      t.entryPrice.toFixed(2), t.exitPrice.toFixed(2), t.shares,
+                      t.profit.toFixed(2), t.profitPercent.toFixed(2), t.holdingPeriod, t.signal
+                    ]);
+                    const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+                    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+                    const link = document.createElement('a');
+                    link.href = URL.createObjectURL(blob);
+                    link.download = `回测交易记录_${result.startDate}_${result.endDate}.csv`;
+                    link.click();
+                    toast.success('导出成功');
+                  }}>
                     <Download className="h-4 w-4" />
                     导出数据
                   </Button>
@@ -451,7 +552,84 @@ export function BacktestView() {
             </Card>
           </>
         )}
-      </div>
-    </div>
+      </TabsContent>
+
+      <TabsContent value="history" className="space-y-6 mt-0">
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle className="text-base">回测历史记录</CardTitle>
+                <CardDescription>最近 20 次回测结果</CardDescription>
+              </div>
+              <Button variant="outline" size="sm" onClick={loadHistory} className="gap-1">
+                <RefreshCw className="h-4 w-4" />
+                刷新
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent>
+            {history.length === 0 ? (
+              <div className="text-center py-8 text-muted-foreground">
+                <History className="h-12 w-12 mx-auto mb-4 opacity-50" />
+                <p>暂无回测记录</p>
+                <p className="text-sm">运行回测后，结果将自动保存到这里</p>
+              </div>
+            ) : (
+              <div className="rounded-md border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>策略</TableHead>
+                      <TableHead>日期范围</TableHead>
+                      <TableHead className="text-right">总收益率</TableHead>
+                      <TableHead className="text-right">最大回撤</TableHead>
+                      <TableHead className="text-right">夏普比率</TableHead>
+                      <TableHead className="text-right">胜率</TableHead>
+                      <TableHead>交易数</TableHead>
+                      <TableHead>时间</TableHead>
+                      <TableHead className="w-10"></TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {history.map((record) => (
+                      <TableRow key={record.id}>
+                        <TableCell className="font-medium">{record.strategy_name || '-'}</TableCell>
+                        <TableCell className="text-xs">
+                          {record.start_date} ~ {record.end_date}
+                        </TableCell>
+                        <TableCell className={`text-right font-medium ${getProfitColorClass(record.total_return)}`}>
+                          {record.total_return >= 0 ? '+' : ''}{record.total_return.toFixed(2)}%
+                        </TableCell>
+                        <TableCell className="text-right text-destructive">
+                          {record.max_drawdown.toFixed(2)}%
+                        </TableCell>
+                        <TableCell className="text-right">{record.sharpe_ratio.toFixed(2)}</TableCell>
+                        <TableCell className="text-right">{record.win_rate.toFixed(1)}%</TableCell>
+                        <TableCell>{record.total_trades} 笔</TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {new Date(record.created_at).toLocaleString('zh-CN')}
+                        </TableCell>
+                        <TableCell>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleDeleteRecord(record.id)}
+                          >
+                            <Trash2 className="h-4 w-4 text-muted-foreground" />
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </TabsContent>
+    </Tabs>
+  </div>
+</div>
   );
 }
