@@ -53,17 +53,19 @@ export function BacktestView() {
       }
       
       // 转换策略规则为回测格式
+      // 与策略配置的 stockRules 字段一一对应
       const rules = {
-        maxMarketCap: strategy.moneyRules?.maxSingleStockPercent ? strategy.moneyRules.maxSingleStockPercent * 10 : undefined,
-        minMarketCap: strategy.moneyRules?.totalCapital ? strategy.moneyRules.totalCapital / 10000 : undefined,
+        minMarketCap: strategy.stockRules?.minMarketCap,
+        maxMarketCap: strategy.stockRules?.maxMarketCap,
         minROE: strategy.stockRules?.minROE,
         maxDebtRatio: strategy.stockRules?.maxDebtRatio,
         minTurnoverRate: strategy.stockRules?.minTurnoverRate5D,
         maxPE: strategy.stockRules?.maxPEPercentile,
         minVolumeRatio: strategy.stockRules?.volumeRatio,
-        priceAboveMA5: strategy.buyRules?.ma5CrossMa20,
-        priceAboveMA20: strategy.buyRules?.ma5CrossMa20,
-        weeklyMACDGoldenCross: strategy.buyRules?.macdGoldenCross,
+        minSectorGain: strategy.stockRules?.minSectorGain,
+        priceAboveMA5: strategy.stockRules?.priceAboveMA5,
+        priceAboveMA20: strategy.stockRules?.priceAboveMA20,
+        weeklyMACDGoldenCross: strategy.stockRules?.weeklyMACDGoldenCross,
       };
       
       // 调用真实回测API

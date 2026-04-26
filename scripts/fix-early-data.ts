@@ -81,15 +81,31 @@ async function main() {
     return;
   }
 
+  // 按年份分组统计
+  const yearStats: Record<string, number> = {};
+  for (const d of weakDates) {
+    const year = d.date.slice(0, 4);
+    yearStats[year] = (yearStats[year] || 0) + 1;
+  }
+  console.log('[Fix] 各年份不完整天数:', Object.entries(yearStats).sort().map(([y, c]) => `${y}:${c}天`).join(', '));
+
+  // 优先修复 2024-2026 年数据，再修复 2023 年
+  const priorityYears = ['2024', '2025', '2026', '2023'];
+  const sortedDates = priorityYears
+    .flatMap(year => weakDates.filter(d => d.date.startsWith(year)))
+    .filter(d => d);
+
+  console.log(`[Fix] 按优先级排序后: ${sortedDates.length} 天（优先 ${priorityYears.slice(0, 3).join('/')}）`);
+
   let fixedKline = 0;
   let fixedBasic = 0;
   let failedDates = 0;
 
-  for (let i = 0; i < weakDates.length; i++) {
-    const { date, cnt } = weakDates[i];
+  for (let i = 0; i < sortedDates.length; i++) {
+    const { date, cnt } = sortedDates[i];
     const dateStr = `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}`;
 
-    console.log(`[Fix] ${i + 1}/${weakDates.length}: ${dateStr} (当前 ${cnt} 条)`);
+    console.log(`[Fix] ${i + 1}/${sortedDates.length}: ${dateStr} (当前 ${cnt} 条)`);
 
     try {
       // 先删除该日期的旧数据

@@ -2,8 +2,9 @@
 // 基于本地SQLite历史数据执行策略规则，计算回测指标
 
 import { NextRequest, NextResponse } from 'next/server';
-import { getMarketDataByDate, getKlineHistory } from '@/lib/db/sqlite';
+import { getMarketDataByDate, getKlineHistory, getDatabase } from '@/lib/db/sqlite';
 import type { BacktestParams, BacktestResult, BacktestTrade, EquityPoint } from '@/lib/types';
+import { checkStockRules, type FilterContext } from '@/lib/stock-scan/filter-engine';
 
 export const dynamic = 'force-dynamic';
 
@@ -166,19 +167,35 @@ async function runBacktest(
     }
     positions = remainingPositions;
     
-    // 2. 选股（基于策略规则）
-    const candidates: typeof marketData = [];
+    // 2. 选股（基于策略规则，复用 filter-engine）
+    const candidates: { data: typeof marketData[0]; score: number }[] = [];
     for (const data of marketData) {
       if (!data || data.close <= 0) continue;
       
-      // 基本面筛选
-      if (rules.maxMarketCap && data.marketCap && data.marketCap > rules.maxMarketCap) continue;
-      if (rules.minMarketCap && data.marketCap && data.marketCap < rules.minMarketCap) continue;
-      if (rules.maxPE && data.pe && data.pe > rules.maxPE) continue;
+      // 构建 FilterContext
+      const ctx: FilterContext = {
+        code: data.code,
+        quote: {
+          price: data.close,
+          changePercent: data.changePercent || 0,
+          volume: data.volume || 0,
+          amount: data.amount || 0,
+          name: data.code,
+        },
+        basicData: {
+          marketCap: data.marketCap || 0,
+          pe: data.pe || 0,
+          pb: data.pb || 0,
+          turnoverRate: data.turnoverRate || 0,
+          volumeRatio: data.volumeRatio || 0,
+        },
+        finance: null,
+        technical: null,
+        sector: null,
+      };
       
-      // 技术面筛选（从本地数据库查询历史数据）
+      // 技术面数据（从本地数据库查询）
       if (rules.priceAboveMA5 || rules.priceAboveMA20 || rules.weeklyMACDGoldenCross) {
-        // 计算历史数据开始日期（30天前）
         const histStart = new Date(dateStr);
         histStart.setDate(histStart.getDate() - 40);
         const histStartStr = histStart.toISOString().slice(0, 10).replace(/-/g, '');
@@ -190,16 +207,17 @@ async function runBacktest(
         const ma5 = calculateMA(prices, 5);
         const ma20 = calculateMA(prices, 20);
         
-        if (rules.priceAboveMA5 && data.close <= ma5) continue;
-        if (rules.priceAboveMA20 && data.close <= ma20) continue;
-        if (rules.weeklyMACDGoldenCross && !calculateMACDGoldenCross(prices)) continue;
+        ctx.technical = {
+          ma5,
+          ma20,
+          weeklyMACDGoldenCross: calculateMACDGoldenCross(prices),
+        };
       }
       
-      // 资金面筛选
-      if (rules.minTurnoverRate && data.turnoverRate && data.turnoverRate < rules.minTurnoverRate) continue;
-      if (rules.minVolumeRatio && data.volumeRatio && data.volumeRatio < rules.minVolumeRatio) continue;
-      
-      candidates.push(data);
+      const filterResult = checkStockRules(rules, ctx);
+      if (filterResult.meetsRules) {
+        candidates.push({ data, score: filterResult.score });
+      }
     }
     
     // 3. 买入（按评分排序，选择前N只）
@@ -207,13 +225,13 @@ async function runBacktest(
     const availableSlots = maxPositions - positions.length;
     
     if (availableSlots > 0 && candidates.length > 0) {
-      // 按涨跌幅排序（简单评分）
-      candidates.sort((a, b) => (b.changePercent || 0) - (a.changePercent || 0));
+      // 按 filter-engine 的综合评分排序
+      candidates.sort((a, b) => b.score - a.score);
       
       const selected = candidates.slice(0, availableSlots);
       const positionSize = cash / (availableSlots + 1); // 预留部分现金
       
-      for (const stock of selected) {
+      for (const { data: stock } of selected) {
         if (cash < positionSize * 1.1) break; // 保留10%缓冲
         
         const shares = Math.floor(positionSize / stock.close / 100) * 100; // 100股整数
@@ -346,6 +364,13 @@ export async function POST(request: NextRequest) {
     
     const result = await runBacktest(params, rules);
     
+    // 持久化保存回测结果
+    try {
+      saveBacktestResult(result);
+    } catch (dbError) {
+      console.warn('保存回测结果失败（不影响回测结果）:', dbError);
+    }
+    
     return NextResponse.json({
       success: true,
       data: result,
@@ -359,4 +384,44 @@ export async function POST(request: NextRequest) {
       timestamp: Date.now(),
     });
   }
+}
+
+// 持久化保存回测结果到 SQLite
+function saveBacktestResult(result: BacktestResult) {
+  const database = getDatabase();
+  
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS backtest_results (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      strategy_id TEXT,
+      strategy_name TEXT,
+      start_date TEXT,
+      end_date TEXT,
+      initial_capital REAL,
+      final_capital REAL,
+      total_return REAL,
+      annualized_return REAL,
+      max_drawdown REAL,
+      sharpe_ratio REAL,
+      win_rate REAL,
+      total_trades INTEGER,
+      created_at TEXT DEFAULT (datetime('now', 'localtime'))
+    )
+  `);
+  
+  const insert = database.prepare(`
+    INSERT INTO backtest_results 
+    (strategy_id, strategy_name, start_date, end_date, initial_capital, final_capital, 
+     total_return, annualized_return, max_drawdown, sharpe_ratio, win_rate, total_trades)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  
+  insert.run(
+    result.strategyId, result.strategyName,
+    result.startDate, result.endDate,
+    result.initialCapital, result.finalCapital,
+    result.totalReturn, result.annualizedReturn,
+    result.maxDrawdown, result.sharpeRatio,
+    result.winRate, result.totalTrades
+  );
 }
