@@ -17,3 +17,7 @@ node_modules
 
 # SQLite database
 data/
+
+# Build cache
+tsconfig.tsbuildinfo
+.nixpacks/
