@@ -10,7 +10,7 @@ import { checkStockRules, type FilterContext } from '@/lib/stock-scan/filter-eng
 
 export const dynamic = 'force-dynamic';
 
-interface StrategyRules {
+export interface StrategyRules {
   maxMarketCap?: number;
   minMarketCap?: number;
   minROE?: number;
@@ -22,9 +22,18 @@ interface StrategyRules {
   minPB?: number;
   maxPB?: number;
   minVolumeRatio?: number;
+  // 趋势指标
   priceAboveMA5?: boolean;
   priceAboveMA20?: boolean;
   weeklyMACDGoldenCross?: boolean;
+  // 均值回归指标
+  priceBelowMA5?: boolean;
+  priceBelowMA20?: boolean;
+  rsiOversold?: number;
+  bollingerBelowLower?: boolean;
+  maxConsecutiveDecline?: number;
+  // 策略类型
+  strategyType?: 'trend' | 'mean-reversion' | 'value';
   minSectorGain?: number;
   // 买入信号规则（用于buySignal检测）
   buyMa5CrossMa20?: boolean;
@@ -33,7 +42,7 @@ interface StrategyRules {
   buyVolumeConfirm?: boolean;
 }
 
-interface ScanStock {
+export interface ScanStock {
   code: string;
   name: string;
   price: number;
@@ -50,7 +59,7 @@ interface ScanStock {
   roe: number | null;
   debtRatio: number | null;
   score: number;
-  ruleChecks: { rule: string; pass: boolean; value?: string }[];
+  ruleChecks: import('@/lib/stock-scan/filter-engine').RuleCheck[];
   meetsRules: boolean;
   buySignal?: BuySignal;
 }
@@ -72,6 +81,8 @@ async function getCandidateStocks(rules: StrategyRules): Promise<{
     pb: number;
     turnoverRate: number;
     volumeRatio: number;
+    close: number;
+    changePercent: number;
   }>;
   source: string;
   error?: string;
@@ -99,13 +110,12 @@ async function getCandidateStocks(rules: StrategyRules): Promise<{
       const allBasicResult = await getAllDailyBasic();
       
       // 构建基本面数据映射
-      const basicDataLookup = new Map<string, typeof allBasicResult.data[0]>();
-      if (allBasicResult.success && allBasicResult.data) {
-        allBasicResult.data.forEach(item => {
-          basicDataLookup.set(item.code, item);
-        });
-        console.log(`[Scan] daily_basic 返回 ${allBasicResult.data.length} 只股票有当日数据`);
-      }
+      const basicDataItems = allBasicResult.success && allBasicResult.data ? allBasicResult.data : [];
+      const basicDataLookup = new Map<string, typeof basicDataItems[0]>();
+      basicDataItems.forEach(item => {
+        basicDataLookup.set(item.code, item);
+      });
+      console.log(`[Scan] daily_basic 返回 ${basicDataItems.length} 只股票有当日数据`);
       
       // 第三步：过滤 + 填充数据
       // 过滤掉ST股、退市股等
@@ -116,7 +126,7 @@ async function getCandidateStocks(rules: StrategyRules): Promise<{
       });
       console.log(`[Scan] 过滤ST/退市股后剩余 ${validStocks.length} 只`);
       
-      const filtered: (typeof allBasicResult.data)[0][] = [];
+      const filtered: typeof basicDataItems = [];
       let noDataButKept = 0;
       let filteredByMinMarketCap = 0;
       let filteredByMaxMarketCap = 0;
@@ -170,30 +180,30 @@ async function getCandidateStocks(rules: StrategyRules): Promise<{
       
       const codes = sorted.map(item => item.code);
       const basicDataMap = new Map<string, {
-        marketCap: number; pe: number; pb: number; turnoverRate: number; volumeRatio: number;
+        marketCap: number; pe: number; pb: number; turnoverRate: number; volumeRatio: number; close: number; changePercent: number;
       }>();
       sorted.forEach(item => {
         basicDataMap.set(item.code, {
           marketCap: item.marketCap, pe: item.pe, pb: item.pb,
           turnoverRate: item.turnoverRate, volumeRatio: item.volumeRatio,
+          close: 'close' in item ? (item as { close: number }).close : 0,
+          changePercent: 'changePercent' in item ? (item as { changePercent: number }).changePercent : 0,
         });
       });
-      
-      if (codes.length > 0) {
-        console.log(`[Scan] 全市场筛选完成: ${totalStocks}只 → ${validStocks.length}只有效 → ${filtered.length}只符合基本面规则 → 取${codes.length}只`);
-        return { codes, filteredCount: filtered.length, basicDataMap, source: 'tushare-full-market', nameMap };
-      }
+
+      console.log(`[Scan] 全市场筛选完成: ${totalStocks}只 → ${validStocks.length}只有效 → ${filtered.length}只符合基本面规则 → 取${codes.length}只`);
+      return { codes, filteredCount: filtered.length, basicDataMap, source: 'tushare-full-market', nameMap };
     } catch (e) {
       console.error('[Scan] 获取候选股票失败:', e);
       console.error('[Scan] 错误详情:', e instanceof Error ? e.stack : String(e));
       const errMsg = e instanceof Error ? e.message : String(e);
-      const emptyMap = new Map<string, { marketCap: number; pe: number; pb: number; turnoverRate: number; volumeRatio: number }>();
+      const emptyMap = new Map<string, { marketCap: number; pe: number; pb: number; turnoverRate: number; volumeRatio: number; close: number; changePercent: number }>();
       const emptyNameMap = new Map<string, string>();
       return { codes: [], filteredCount: 0, basicDataMap: emptyMap, source: 'error', error: `数据获取失败: ${errMsg}`, nameMap: emptyNameMap };
     }
   } else {
     console.warn('[Scan] Tushare 未配置 (TUSHARE_TOKEN 未设置)');
-    const emptyMap = new Map<string, { marketCap: number; pe: number; pb: number; turnoverRate: number; volumeRatio: number }>();
+    const emptyMap = new Map<string, { marketCap: number; pe: number; pb: number; turnoverRate: number; volumeRatio: number; close: number; changePercent: number }>();
     const emptyNameMap = new Map<string, string>();
     return { codes: [], filteredCount: 0, basicDataMap: emptyMap, source: 'error', error: 'TUSHARE_TOKEN 未配置', nameMap: emptyNameMap };
   }
@@ -489,9 +499,18 @@ export async function GET(request: NextRequest) {
       minPB: searchParams.get('minPB') ? Number(searchParams.get('minPB')) : undefined,
       maxPB: searchParams.get('maxPB') ? Number(searchParams.get('maxPB')) : undefined,
       minVolumeRatio: searchParams.get('minVolumeRatio') ? Number(searchParams.get('minVolumeRatio')) : undefined,
+      // 趋势指标
       priceAboveMA5: searchParams.get('priceAboveMA5') === 'true',
       priceAboveMA20: searchParams.get('priceAboveMA20') === 'true',
       weeklyMACDGoldenCross: searchParams.get('weeklyMACDGoldenCross') === 'true',
+      // 均值回归指标
+      priceBelowMA5: searchParams.get('priceBelowMA5') === 'true',
+      priceBelowMA20: searchParams.get('priceBelowMA20') === 'true',
+      rsiOversold: searchParams.get('rsiOversold') ? Number(searchParams.get('rsiOversold')) : undefined,
+      bollingerBelowLower: searchParams.get('bollingerBelowLower') === 'true',
+      maxConsecutiveDecline: searchParams.get('maxConsecutiveDecline') ? Number(searchParams.get('maxConsecutiveDecline')) : undefined,
+      // 策略类型
+      strategyType: (searchParams.get('strategyType') as StrategyRules['strategyType']) || undefined,
       minSectorGain: searchParams.get('minSectorGain') ? Number(searchParams.get('minSectorGain')) : undefined,
       // 买入信号规则
       buyMa5CrossMa20: searchParams.get('buyMa5CrossMa20') === 'true',
@@ -535,10 +554,13 @@ export async function GET(request: NextRequest) {
     if (rules.minPB) poolFilters.push(`PB≥${rules.minPB}`);
     if (rules.maxPB) poolFilters.push(`PB≤${rules.maxPB}`);
     
+    const hasBasicRules = poolFilters.length > 0;
+    const basicFilterDesc = poolFilters.join('，') || '无';
+    
     funnelSteps.push({
       label: '基本面筛选',
       count: filteredCount,
-      filter: poolFilters.join('，'),
+      filter: basicFilterDesc,
     });
     
     // 2. 获取行情数据
@@ -578,31 +600,41 @@ export async function GET(request: NextRequest) {
     if (useClosePrice) {
       // 非交易时段：直接使用Tushare收盘价，跳过新浪请求
       console.log('[Scan] 非交易时段，使用Tushare收盘价，跳过新浪实时行情请求');
+      // 如果 closePriceMap 为空（bak_daily 无数据），尝试从 basicDataMap 获取价格
+      const hasCloseData = closePriceMap.size > 0;
       mergedQuotes = candidateCodes.map(code => {
         const closeData = closePriceMap.get(code);
-        const prevClose = closeData?.price && closeData?.changePercent !== undefined
-          ? closeData.price / (1 + closeData.changePercent / 100)
-          : closeData?.price || 0;
+        const basicData = basicDataMap.get(code);
+        // 优先使用 bak_daily 的收盘价，否则使用 basicDataMap 中的 close
+        const price = closeData?.price || basicData?.close || 0;
+        const changePercent = closeData?.changePercent || basicData?.changePercent || 0;
+        const prevClose = price && changePercent !== undefined
+          ? price / (1 + changePercent / 100)
+          : price || 0;
         return {
           code: code.startsWith('6') || code.startsWith('9') ? `sh${code}` : `sz${code}`,
           name: nameMap.get(code) || '',
-          price: closeData?.price || 0,
-          changePercent: closeData?.changePercent || 0,
+          price,
+          changePercent,
           volume: 0,
           amount: 0,
           prevClose,
-          open: closeData?.price || 0,
-          high: closeData?.price || 0,
-          low: closeData?.price || 0,
+          open: price || 0,
+          high: price || 0,
+          low: price || 0,
           bid1: 0,
           bid1Vol: 0,
           ask1: 0,
           ask1Vol: 0,
           date: '',
           time: '',
-          change: closeData?.price ? closeData.price - prevClose : 0,
+          change: price ? price - prevClose : 0,
         };
       });
+      // 如果 closePriceMap 为空，放宽价格过滤条件（允许价格为0的股票进入候选池）
+      if (!hasCloseData) {
+        console.log('[Scan] 警告: bak_daily 无收盘价数据，使用 daily_basic 数据，放宽价格过滤');
+      }
     } else {
       // 交易时段：使用新浪实时行情
       const sinaCodes = candidateCodes.map(code => {
@@ -629,10 +661,14 @@ export async function GET(request: NextRequest) {
     }
     
     // 静默过滤无效行情（停牌、退市等），不加入漏斗
-    const validQuotes = mergedQuotes.filter(q => q.price > 0);
+    // 当 bak_daily 无收盘价数据时（如周末/节假日），不过滤价格为0的股票，保留进入后续筛选
+    const hasClosePriceData = mergedQuotes.some(q => q.price > 0);
+    const validQuotes = hasClosePriceData ? mergedQuotes.filter(q => q.price > 0) : mergedQuotes;
     const invalidCount = candidateCodes.length - validQuotes.length;
     if (invalidCount > 0) {
       console.log(`[Scan] 过滤${invalidCount}只无效行情（停牌/退市）`);
+    } else if (!hasClosePriceData) {
+      console.log(`[Scan] 无收盘价数据，保留所有${validQuotes.length}只股票进入后续筛选`);
     }
     
     // 2.5 获取行业信息
@@ -649,9 +685,17 @@ export async function GET(request: NextRequest) {
     
     // 构建选股规则描述（仅选股规则，不含买入规则）
     const selectionRules: string[] = [];
+    // 趋势指标
     if (rules.priceAboveMA5) selectionRules.push('股价>MA5');
     if (rules.priceAboveMA20) selectionRules.push('股价>MA20');
     if (rules.weeklyMACDGoldenCross) selectionRules.push('周线MACD金叉');
+    // 均值回归指标
+    if (rules.priceBelowMA5) selectionRules.push('股价<MA5');
+    if (rules.priceBelowMA20) selectionRules.push('股价<MA20');
+    if (rules.rsiOversold !== undefined && rules.rsiOversold > 0) selectionRules.push(`RSI超卖<${rules.rsiOversold}`);
+    if (rules.bollingerBelowLower) selectionRules.push('股价触及布林带下轨');
+    if (rules.maxConsecutiveDecline !== undefined && rules.maxConsecutiveDecline > 0) selectionRules.push(`连续下跌≥${rules.maxConsecutiveDecline}天`);
+    // 基本面/资金面
     if (rules.minROE !== undefined) selectionRules.push(`ROE≥${rules.minROE}%`);
     if (rules.maxDebtRatio !== undefined) selectionRules.push(`负债率≤${rules.maxDebtRatio}%`);
     if (rules.maxPEPercentile !== undefined) selectionRules.push(`PE分位≤${rules.maxPEPercentile}%`);
@@ -665,14 +709,19 @@ export async function GET(request: NextRequest) {
     if (rules.buyCandleConfirm) buyRuleFilters.push('K线确认');
     if (rules.buyVolumeConfirm) buyRuleFilters.push('成交量确认');
     
-    // 3.5 获取技术指标用于技术面规则检查（MA5/MA20、周MACD金叉）
-    // 使用 validQuotes 对应的代码来获取技术指标，确保与 scanResults 对齐
-    const needsTechnicalCheck = rules.priceAboveMA5 || rules.priceAboveMA20 || rules.weeklyMACDGoldenCross;
-    let technicalDataMap = new Map<string, { ma5?: number; ma20?: number; weeklyMACDGoldenCross?: boolean }>();
-    
+    // 3.5 获取技术指标用于技术面规则检查
+    // 支持趋势指标（MA5/MA20、周MACD金叉）和均值回归指标（RSI、布林带、连续下跌天数）
+    const needsTechnicalCheck = rules.priceAboveMA5 || rules.priceAboveMA20 || rules.weeklyMACDGoldenCross ||
+      rules.priceBelowMA5 || rules.priceBelowMA20 || rules.rsiOversold !== undefined && rules.rsiOversold > 0 ||
+      rules.bollingerBelowLower || rules.maxConsecutiveDecline !== undefined && rules.maxConsecutiveDecline > 0;
+    let technicalDataMap = new Map<string, {
+      ma5?: number; ma20?: number; weeklyMACDGoldenCross?: boolean;
+      rsi?: number; bollingerLower?: number; bollingerMid?: number; bollingerUpper?: number; consecutiveDecline?: number;
+    }>();
+
     // 从 validQuotes 中提取需要技术分析的代码（与后续 scanResults 保持一致）
     const codesForTechnicalAnalysis = validQuotes.map(q => q.code.replace(/^(sh|sz|bj)/, ''));
-    
+
     if (needsTechnicalCheck && isTushareConfigured() && codesForTechnicalAnalysis.length > 0) {
       // 分批处理，每批5只（减少并发，避免Tushare限流）
       const batchSize = 5;
@@ -684,13 +733,13 @@ export async function GET(request: NextRequest) {
             if (klineResult.success && klineResult.data && klineResult.data.length >= 60) {
               const klines = klineResult.data;
               const closes = klines.map(k => k.close);
-              
-              const { calculateSMASeries } = await import('@/lib/stock-api/indicators');
+
+              const { calculateSMASeries, calculateRSI, calculateBOLL } = await import('@/lib/stock-api/indicators');
               const ma5Series = calculateSMASeries(closes, 5);
               const ma20Series = calculateSMASeries(closes, 20);
               const ma5 = ma5Series[closes.length - 1];
               const ma20 = ma20Series[closes.length - 1];
-              
+
               let weeklyMACDGoldenCross: boolean | undefined;
               if (rules.weeklyMACDGoldenCross) {
                 const { calculateMACDSeries } = await import('@/lib/stock-api/indicators');
@@ -720,20 +769,55 @@ export async function GET(request: NextRequest) {
                   }
                 }
               }
-              
-              return { code, ma5, ma20, weeklyMACDGoldenCross };
+
+              // 均值回归指标计算
+              let rsi: number | undefined;
+              let bollingerLower: number | undefined;
+              let bollingerMid: number | undefined;
+              let bollingerUpper: number | undefined;
+              let consecutiveDecline: number | undefined;
+
+              if (rules.rsiOversold !== undefined && rules.rsiOversold > 0) {
+                rsi = calculateRSI(closes, 14) ?? undefined;
+              }
+              if (rules.bollingerBelowLower) {
+                const boll = calculateBOLL(closes, 20, 2);
+                if (boll) {
+                  bollingerLower = boll.lower;
+                  bollingerMid = boll.middle;
+                  bollingerUpper = boll.upper;
+                }
+              }
+              if (rules.maxConsecutiveDecline !== undefined && rules.maxConsecutiveDecline > 0) {
+                // 计算连续下跌天数（从最近一天往前数）
+                let declineDays = 0;
+                for (let j = closes.length - 1; j > 0; j--) {
+                  if (closes[j] < closes[j - 1]) {
+                    declineDays++;
+                  } else {
+                    break;
+                  }
+                }
+                consecutiveDecline = declineDays;
+              }
+
+              return { code, ma5, ma20, weeklyMACDGoldenCross, rsi, bollingerLower, bollingerMid, bollingerUpper, consecutiveDecline };
             }
           } catch (e) {
             console.log(`[TechnicalData] 获取${code}K线失败:`, e);
           }
           return null;
         });
-        
+
         const results = await Promise.all(promises);
         results.forEach(r => {
-          if (r) technicalDataMap.set(r.code, { ma5: r.ma5, ma20: r.ma20, weeklyMACDGoldenCross: r.weeklyMACDGoldenCross });
+          if (r) technicalDataMap.set(r.code, {
+            ma5: r.ma5, ma20: r.ma20, weeklyMACDGoldenCross: r.weeklyMACDGoldenCross,
+            rsi: r.rsi, bollingerLower: r.bollingerLower, bollingerMid: r.bollingerMid, bollingerUpper: r.bollingerUpper,
+            consecutiveDecline: r.consecutiveDecline,
+          });
         });
-        
+
         if (i + batchSize < codesForTechnicalAnalysis.length) {
           await new Promise(resolve => setTimeout(resolve, 100));
         }
@@ -759,7 +843,7 @@ export async function GET(request: NextRequest) {
         const sectorData = sectorGainMap.get(code);
         
         // 确定价格来源
-        const priceSource = (useClosePrice && closePriceMap.has(code)) ? 'close' : 'realtime';
+        const priceSource: 'realtime' | 'close' = (useClosePrice && closePriceMap.has(code)) ? 'close' : 'realtime';
         
         // 构建过滤上下文
         const filterCtx: FilterContext = {
@@ -815,135 +899,98 @@ export async function GET(request: NextRequest) {
     
     const matchCount = scanResults.filter(s => s.meetsRules).length;
     
-    // ===== 漏斗构建（按基本面→技术面→资金面顺序） =====
+    // ===== 漏斗构建（使用 scanResults 中已计算的结果） =====
+    // scanResults 中的每只股票已经通过 checkStockRules 计算了所有规则的通过情况
+    // 注意：filter-engine.ts 中，无数据时规则标记为 pass:false 但不设置 meetsAllRules=false
+    // 因此漏斗统计应该忽略 "无数据" 的规则，只统计有明确数据的规则的通过情况
     
-    // 漏斗步骤2: 技术面筛选
-    // 技术面条件：股价>MA5、股价>MA20、周MACD金叉
-    // 注意：无数据时不作为硬性淘汰（与meetsAllRules逻辑保持一致）
-    const hasTechnicalRules = rules.priceAboveMA5 || rules.priceAboveMA20 || rules.weeklyMACDGoldenCross;
+    // 1. 基本面筛选统计（市值、PE、PB等）- 这些规则有数据时才是硬过滤
+    const basicPassCount = scanResults.filter(s => 
+      s.ruleChecks.every(rc => {
+        if (!rc.rule.includes('市值') && !rc.rule.includes('PE') && !rc.rule.includes('PB')) return true;
+        // 基本面规则：有数据且失败才算失败
+        return rc.pass || rc.value === '无数据';
+      })
+    ).length;
+    
+    // 2. 技术面筛选统计（MA、MACD、RSI、布林带等）- 无数据时不淘汰
+    // 从基本面筛选通过的股票中统计
+    const basicPassStocks = scanResults.filter(s => 
+      s.ruleChecks.every(rc => {
+        if (!rc.rule.includes('市值') && !rc.rule.includes('PE') && !rc.rule.includes('PB')) return true;
+        return rc.pass || rc.value === '无数据';
+      })
+    );
+    const technicalPassCount = basicPassStocks.filter(s =>
+      s.ruleChecks.every(rc => {
+        if (!rc.rule.includes('MA5') && !rc.rule.includes('MA20') && !rc.rule.includes('MACD') && 
+            !rc.rule.includes('RSI') && !rc.rule.includes('布林带') && !rc.rule.includes('连续下跌')) return true;
+        // 技术面规则：无数据时不淘汰（与 filter-engine.ts 一致）
+        return rc.pass || rc.value === '无数据';
+      })
+    ).length;
+    
+    // 3. 资金面筛选统计（换手率、量比、板块涨幅）- 无数据时不淘汰
+    // 从技术面筛选通过的股票中统计
+    const technicalPassStocks = basicPassStocks.filter(s =>
+      s.ruleChecks.every(rc => {
+        if (!rc.rule.includes('MA5') && !rc.rule.includes('MA20') && !rc.rule.includes('MACD') && 
+            !rc.rule.includes('RSI') && !rc.rule.includes('布林带') && !rc.rule.includes('连续下跌')) return true;
+        return rc.pass || rc.value === '无数据';
+      })
+    );
+    const capitalPassCount = technicalPassStocks.filter(s =>
+      s.ruleChecks.every(rc => {
+        if (!rc.rule.includes('换手率') && !rc.rule.includes('量比') && !rc.rule.includes('板块涨幅')) return true;
+        // 资金面规则：无数据时不淘汰
+        return rc.pass || rc.value === '无数据';
+      })
+    ).length;
+    
+    // 构建漏斗步骤（注意：基本面筛选已在上面添加，这里只添加技术面、资金面、符合规则）
+    
+    const hasTechnicalRules = rules.priceAboveMA5 || rules.priceAboveMA20 || rules.weeklyMACDGoldenCross ||
+      rules.priceBelowMA5 || rules.priceBelowMA20 || rules.rsiOversold !== undefined && rules.rsiOversold > 0 ||
+      rules.bollingerBelowLower || rules.maxConsecutiveDecline !== undefined && rules.maxConsecutiveDecline > 0;
     if (hasTechnicalRules) {
-      let ma5PassCount = 0, ma5FailCount = 0, ma5NoDataCount = 0;
-      let ma20PassCount = 0, ma20FailCount = 0, ma20NoDataCount = 0;
-      let macdPassCount = 0, macdFailCount = 0, macdNoDataCount = 0;
-      
-      // 从基本面筛选后的候选池中计算技术面通过情况
-      // 与meetsAllRules逻辑保持一致：无数据时不淘汰
-      const technicalPassResults = scanResults.filter(s => {
-        let allPass = true;
-        let anyChecked = false; // 是否有任何条件被检查
-        const techData = technicalDataMap.get(s.code);
-        
-        // MA5
-        if (rules.priceAboveMA5) {
-          anyChecked = true;
-          if (!techData?.ma5 || techData.ma5 <= 0) { ma5NoDataCount++; /* 无数据不淘汰 */ }
-          else if (s.price > techData.ma5) { ma5PassCount++; }
-          else { ma5FailCount++; allPass = false; }
-        }
-        
-        // MA20
-        if (rules.priceAboveMA20) {
-          anyChecked = true;
-          if (!techData?.ma20 || techData.ma20 <= 0) { ma20NoDataCount++; /* 无数据不淘汰 */ }
-          else if (s.price > techData.ma20) { ma20PassCount++; }
-          else { ma20FailCount++; allPass = false; }
-        }
-        
-        // 周MACD金叉
-        if (rules.weeklyMACDGoldenCross) {
-          anyChecked = true;
-          if (techData?.weeklyMACDGoldenCross === undefined) { macdNoDataCount++; /* 无数据不淘汰 */ }
-          else if (techData.weeklyMACDGoldenCross) { macdPassCount++; }
-          else { macdFailCount++; allPass = false; }
-        }
-        
-        return allPass;
-      });
-      
-      const technicalPassCount = technicalPassResults.length;
-      
-      // 构建条件描述
       const details: string[] = [];
-      if (rules.priceAboveMA5) details.push(`股价>MA5`);
-      if (rules.priceAboveMA20) details.push(`股价>MA20`);
-      if (rules.weeklyMACDGoldenCross) details.push(`周线MACD金叉`);
+      if (rules.priceAboveMA5) details.push('股价>MA5');
+      if (rules.priceAboveMA20) details.push('股价>MA20');
+      if (rules.weeklyMACDGoldenCross) details.push('周线MACD金叉');
+      if (rules.priceBelowMA5) details.push('股价<MA5');
+      if (rules.priceBelowMA20) details.push('股价<MA20');
+      if (rules.rsiOversold !== undefined && rules.rsiOversold > 0) details.push(`RSI超卖<${rules.rsiOversold}`);
+      if (rules.bollingerBelowLower) details.push('布林带下轨');
+      if (rules.maxConsecutiveDecline !== undefined && rules.maxConsecutiveDecline > 0) details.push(`连续下跌≥${rules.maxConsecutiveDecline}天`);
       
       funnelSteps.push({
         label: '技术面筛选',
         count: technicalPassCount,
         filter: details.join('、'),
       });
-      
-      // 漏斗步骤3: 资金面筛选
-      // 资金面条件：换手率、量比、板块涨幅
-      const hasCapitalRules = (rules.minTurnoverRate && rules.minTurnoverRate > 0) || (rules.minVolumeRatio && rules.minVolumeRatio > 0) || (rules.minSectorGain && rules.minSectorGain > 0);
-      if (hasCapitalRules) {
-        let turnoverPassCount = 0, turnoverFailCount = 0;
-        let volumeRatioPassCount = 0, volumeRatioFailCount = 0;
-        let sectorPassCount = 0, sectorFailCount = 0, sectorNoDataCount = 0;
-        
-        // 从技术面筛选后的股票中计算资金面通过情况
-        const capitalPassResults = technicalPassResults.filter(s => {
-          let allPass = true;
-          
-          // 换手率（资金活跃度指标）
-          if (rules.minTurnoverRate && rules.minTurnoverRate > 0) {
-            if (s.turnoverRate && s.turnoverRate >= rules.minTurnoverRate!) { turnoverPassCount++; }
-            else { turnoverFailCount++; allPass = false; }
-          }
-          
-          // 量比（资金相对强度指标）
-          if (rules.minVolumeRatio && rules.minVolumeRatio > 0) {
-            if (s.volumeRatio >= rules.minVolumeRatio!) { volumeRatioPassCount++; }
-            else { volumeRatioFailCount++; allPass = false; }
-          }
-          
-          // 板块涨幅（资金流向/题材热度指标）
-          // 注意：无数据时不作为硬性淘汰（与技术面筛选逻辑保持一致）
-          if (rules.minSectorGain && rules.minSectorGain > 0) {
-            const sectorData = sectorGainMap.get(s.code);
-            if (!sectorData) { 
-              sectorNoDataCount++; 
-              // 无板块数据时不淘汰，与技术面筛选保持一致
-            } else if (sectorData.gain >= rules.minSectorGain!) { 
-              sectorPassCount++; 
-            } else { 
-              sectorFailCount++; 
-              // 板块涨幅不足时不淘汰，作为参考指标而非硬过滤
-            }
-          }
-          
-          return allPass;
-        });
-        
-        const capitalPassCount = capitalPassResults.length;
-        
-        // 构建条件描述
-        const capitalDetails: string[] = [];
-        if (rules.minTurnoverRate && rules.minTurnoverRate > 0) capitalDetails.push(`换手率≥${rules.minTurnoverRate}%`);
-        if (rules.minVolumeRatio && rules.minVolumeRatio > 0) capitalDetails.push(`量比≥${rules.minVolumeRatio}`);
-        if (rules.minSectorGain && rules.minSectorGain > 0) capitalDetails.push(`板块涨幅≥${rules.minSectorGain}%`);
-        
-        funnelSteps.push({
-          label: '资金面筛选',
-          count: capitalPassCount,
-          filter: capitalDetails.join('、'),
-        });
-      }
     }
     
-    // 漏斗步骤4: 符合选股规则 + 买入信号
-    // 直接使用 scanResults，meetsRules 已在前面正确计算
-    // 避免与 funnel 阶段的过滤逻辑重复/不一致
-    const lastFunnelStep = funnelSteps[funnelSteps.length - 1];
-    const lastFunnelCount = lastFunnelStep ? lastFunnelStep.count : candidateCodes.length;
+    const hasCapitalRules = (rules.minTurnoverRate && rules.minTurnoverRate > 0) || 
+      (rules.minVolumeRatio && rules.minVolumeRatio > 0) || 
+      (rules.minSectorGain && rules.minSectorGain > 0);
+    if (hasCapitalRules) {
+      const capitalDetails: string[] = [];
+      if (rules.minTurnoverRate && rules.minTurnoverRate > 0) capitalDetails.push(`换手率≥${rules.minTurnoverRate}%`);
+      if (rules.minVolumeRatio && rules.minVolumeRatio > 0) capitalDetails.push(`量比≥${rules.minVolumeRatio}`);
+      if (rules.minSectorGain && rules.minSectorGain > 0) capitalDetails.push(`板块涨幅≥${rules.minSectorGain}%`);
+      
+      funnelSteps.push({
+        label: '资金面筛选',
+        count: capitalPassCount,
+        filter: capitalDetails.join('、'),
+      });
+    }
     
-    // 符合选股规则 = meetsRules 为 true 的股票
-    const matchCountFromLastStep = scanResults.filter(s => s.meetsRules).length;
+    // 4. 符合选股规则
     const buySignalCount = scanResults.filter(s => s.buySignal?.trigger).length;
     const analyzedCount = scanResults.filter(s => s.buySignal !== undefined).length;
     
-    if (matchCountFromLastStep < lastFunnelCount) {
+    if (matchCount > 0) {
       const resultLabel = buySignalCount > 0 
         ? `符合选股规则（${buySignalCount}只触发买入信号）`
         : '符合选股规则';
@@ -958,14 +1005,8 @@ export async function GET(request: NextRequest) {
       
       funnelSteps.push({
         label: resultLabel,
-        count: matchCountFromLastStep,
+        count: matchCount,
         filter: filterParts.join('，'),
-      });
-    } else if (buySignalCount > 0) {
-      funnelSteps.push({
-        label: `符合选股规则（${buySignalCount}只触发买入信号）`,
-        count: matchCountFromLastStep,
-        filter: `${buySignalCount}只触发买入信号（检测${analyzedCount}只）`,
       });
     }
     
@@ -1009,9 +1050,16 @@ function buildRuleDescriptions(rules: StrategyRules): string[] {
   if (rules.minVolumeRatio) descs.push(`量比 ≥ ${rules.minVolumeRatio}`);
   if (rules.minPB) descs.push(`PB ≥ ${rules.minPB}`);
   if (rules.maxPB) descs.push(`PB ≤ ${rules.maxPB}`);
+  // 趋势指标
   if (rules.priceAboveMA5) descs.push(`股价 > MA5`);
   if (rules.priceAboveMA20) descs.push(`股价 > MA20`);
   if (rules.weeklyMACDGoldenCross) descs.push(`周MACD金叉`);
+  // 均值回归指标
+  if (rules.priceBelowMA5) descs.push(`股价 < MA5`);
+  if (rules.priceBelowMA20) descs.push(`股价 < MA20`);
+  if (rules.rsiOversold !== undefined && rules.rsiOversold > 0) descs.push(`RSI超卖 < ${rules.rsiOversold}`);
+  if (rules.bollingerBelowLower) descs.push(`股价触及布林带下轨`);
+  if (rules.maxConsecutiveDecline !== undefined && rules.maxConsecutiveDecline > 0) descs.push(`连续下跌 ≥ ${rules.maxConsecutiveDecline}天`);
   if (rules.minSectorGain) descs.push(`板块涨幅 ≥ ${rules.minSectorGain}%`);
   return descs;
 }

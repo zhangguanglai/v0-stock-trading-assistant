@@ -114,13 +114,25 @@ export interface TradingStrategy {
   moneyRules: MoneyManagementRules;
 }
 
+// 策略类型
+export type StrategyType = 'trend' | 'mean-reversion';
+
 // 选股规则
 export interface StockSelectionRules {
+  // 策略类型（默认趋势策略）
+  strategyType?: StrategyType;
+  // ── 趋势策略参数 ──
   // 技术面
   priceAboveMA5: boolean;
   priceAboveMA20: boolean;
   weeklyMACDGoldenCross: boolean;
   volumeRatio: number; // 量比阈值
+  // ── 均值回归策略参数 ──
+  priceBelowMA5: boolean;         // 股价跌破MA5（超短回调）
+  priceBelowMA20: boolean;        // 股价跌破MA20（中期回调）
+  rsiOversold: number;            // RSI超卖阈值（如30）
+  bollingerBelowLower: boolean;   // 股价触及布林带下轨
+  maxConsecutiveDecline: number;  // 最大连续下跌天数
   // 基本面
   minROE: number;
   maxDebtRatio: number;
@@ -134,11 +146,16 @@ export interface StockSelectionRules {
 
 // 买入规则
 export interface BuyRules {
-  // 买入信号（可勾选条件）
+  // ── 趋势策略买入信号 ──
   ma5CrossMa20: boolean;          // 均线多头排列（MA5>MA10>MA20）
   macdGoldenCross: boolean;       // 日MACD金叉且零轴上方
   candleConfirm: boolean;         // K线确认（阳线+站上MA5）
   volumeConfirm: boolean;         // 成交量确认（量>20日均量x1.2）
+  // ── 均值回归策略买入信号 ──
+  priceBounceFromMA20: boolean;   // 股价从MA20下方反弹站上
+  rsiBounceFromOversold: boolean; // RSI从超卖区反弹
+  bollingerBounce: boolean;       // 从布林带下轨反弹
+  volumeShrinkThenExpand: boolean;// 缩量回调后放量
   // 分批买入比例
   batchBuyRatios: number[]; // 如 [0.3, 0.3, 0.4]
   // 加仓条件
@@ -159,6 +176,16 @@ export interface StockSignal {
   timeStopMinGain: number;
   // 分批止盈
   partialTakeProfitPercent: number; // 达到X%卖一半
+}
+
+// 卖出规则
+export interface SellRules {
+  stopLossPercent: number;
+  takeProfitPercent: number;
+  trailingStopPercent: number;
+  timeStopDays: number;
+  timeStopMinGain: number;
+  partialTakeProfitPercent: number;
 }
 
 // 资金管理规则
@@ -394,6 +421,7 @@ export const defaultSwingStrategy: Omit<TradingStrategy, 'id' | 'createdAt'> = {
   cycle: 'swing',
   status: 'active',
   stockRules: {
+    strategyType: 'trend',
     priceAboveMA5: true,
     priceAboveMA20: true,
     weeklyMACDGoldenCross: true,
@@ -402,11 +430,24 @@ export const defaultSwingStrategy: Omit<TradingStrategy, 'id' | 'createdAt'> = {
     maxDebtRatio: 50,
     maxPEPercentile: 30,
     minTurnoverRate5D: 3,
+    minMarketCap: 0,
     maxMarketCap: 100,
     minSectorGain: 2,
+    priceBelowMA5: false,
+    priceBelowMA20: false,
+    rsiOversold: 0,
+    bollingerBelowLower: false,
+    maxConsecutiveDecline: 0,
   },
   buyRules: {
-    signals: ['ma5CrossMa20', 'macdBottomDivergence'],
+    ma5CrossMa20: true,
+    macdGoldenCross: true,
+    candleConfirm: true,
+    volumeConfirm: true,
+    priceBounceFromMA20: false,
+    rsiBounceFromOversold: false,
+    bollingerBounce: false,
+    volumeShrinkThenExpand: false,
     batchBuyRatios: [0.3, 0.3, 0.4],
     addPositionOnDip: 5,
     addPositionOnMA60: true,

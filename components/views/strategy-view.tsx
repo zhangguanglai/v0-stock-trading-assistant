@@ -104,6 +104,7 @@ export function StrategyView() {
       cycle: (template.category === 'swing' ? 'swing' : template.category === 'trend' ? 'short' : 'long') as TradingCycle,
       // 选股规则 - 使用stockRules结构
       stockRules: {
+        strategyType: 'trend' as const,
         priceAboveMA5: true,
         priceAboveMA20: true,
         weeklyMACDGoldenCross: template.category === 'swing',
@@ -112,8 +113,14 @@ export function StrategyView() {
         maxDebtRatio: template.selectionRules.maxDebtRatio || 50,
         maxPEPercentile: 30,
         minTurnoverRate5D: 3,
+        minMarketCap: 0,
         maxMarketCap: template.selectionRules.maxMarketCap || 500,
         minSectorGain: 2,
+        priceBelowMA5: false,
+        priceBelowMA20: false,
+        rsiOversold: 0,
+        bollingerBelowLower: false,
+        maxConsecutiveDecline: 0,
       },
       // 买入规则
       buyRules: {
@@ -121,6 +128,10 @@ export function StrategyView() {
         macdGoldenCross: true,
         candleConfirm: true,
         volumeConfirm: true,
+        priceBounceFromMA20: false,
+        rsiBounceFromOversold: false,
+        bollingerBounce: false,
+        volumeShrinkThenExpand: false,
         batchBuyRatios: [0.3, 0.3, 0.4],
         addPositionOnDip: 5,
         addPositionOnMA60: true,
@@ -143,7 +154,7 @@ export function StrategyView() {
         maxPositions: 5,
       },
     };
-    
+
     addStrategy(strategyData);
     // 获取新创建的策略ID（store会自动设置为activeStrategyId）
     setShowTemplates(false);
@@ -162,6 +173,7 @@ export function StrategyView() {
       cycle: newStrategyCycle,
       status: 'inactive',
       stockRules: {
+        strategyType: 'trend',
         priceAboveMA5: true,
         priceAboveMA20: true,
         weeklyMACDGoldenCross: false,
@@ -173,12 +185,21 @@ export function StrategyView() {
         minMarketCap: 30,
         maxMarketCap: 200,
         minSectorGain: 2,
+        priceBelowMA5: false,
+        priceBelowMA20: false,
+        rsiOversold: 0,
+        bollingerBelowLower: false,
+        maxConsecutiveDecline: 0,
       },
       buyRules: {
         ma5CrossMa20: true,
         macdGoldenCross: true,
         candleConfirm: true,
         volumeConfirm: true,
+        priceBounceFromMA20: false,
+        rsiBounceFromOversold: false,
+        bollingerBounce: false,
+        volumeShrinkThenExpand: false,
         batchBuyRatios: [0.3, 0.3, 0.4],
         addPositionOnDip: 5,
         addPositionOnMA60: true,
@@ -449,49 +470,120 @@ export function StrategyView() {
                 <Card>
                   <CardHeader>
                     <CardTitle className="text-base">技术面条件</CardTitle>
-                    <CardDescription>筛选技术形态符合条件的股票</CardDescription>
+                    <CardDescription>启用并配置技术指标筛选条件（可自由组合）</CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-6">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <Label>股价 &gt; 5日均线</Label>
-                        <p className="text-sm text-muted-foreground">短期趋势向上</p>
+                    {/* 趋势指标 */}
+                    <div className="space-y-4">
+                      <h4 className="text-sm font-medium text-muted-foreground">趋势指标</h4>
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <Label>股价 &gt; 5日均线</Label>
+                          <p className="text-sm text-muted-foreground">短期趋势向上</p>
+                        </div>
+                        <Switch
+                          checked={activeStrategy.stockRules.priceAboveMA5}
+                          onCheckedChange={(v) =>
+                            handleUpdateRules(activeStrategy.id, 'stockRules.priceAboveMA5', v)
+                          }
+                        />
                       </div>
-                      <Switch
-                        checked={activeStrategy.stockRules.priceAboveMA5}
-                        onCheckedChange={(v) =>
-                          handleUpdateRules(activeStrategy.id, 'stockRules.priceAboveMA5', v)
-                        }
-                      />
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <Label>股价 &gt; 20日均线</Label>
-                        <p className="text-sm text-muted-foreground">中期趋势向上</p>
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <Label>股价 &gt; 20日均线</Label>
+                          <p className="text-sm text-muted-foreground">中期趋势向上</p>
+                        </div>
+                        <Switch
+                          checked={activeStrategy.stockRules.priceAboveMA20}
+                          onCheckedChange={(v) =>
+                            handleUpdateRules(activeStrategy.id, 'stockRules.priceAboveMA20', v)
+                          }
+                        />
                       </div>
-                      <Switch
-                        checked={activeStrategy.stockRules.priceAboveMA20}
-                        onCheckedChange={(v) =>
-                          handleUpdateRules(activeStrategy.id, 'stockRules.priceAboveMA20', v)
-                        }
-                      />
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <Label>周线MACD金叉</Label>
-                        <p className="text-sm text-muted-foreground">周级别趋势确认</p>
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <Label>周线MACD金叉</Label>
+                          <p className="text-sm text-muted-foreground">周级别趋势确认</p>
+                        </div>
+                        <Switch
+                          checked={activeStrategy.stockRules.weeklyMACDGoldenCross}
+                          onCheckedChange={(v) =>
+                            handleUpdateRules(
+                              activeStrategy.id,
+                              'stockRules.weeklyMACDGoldenCross',
+                              v
+                            )
+                          }
+                        />
                       </div>
-                      <Switch
-                        checked={activeStrategy.stockRules.weeklyMACDGoldenCross}
-                        onCheckedChange={(v) =>
-                          handleUpdateRules(
-                            activeStrategy.id,
-                            'stockRules.weeklyMACDGoldenCross',
-                            v
-                          )
-                        }
-                      />
                     </div>
+
+                    {/* 均值回归指标 */}
+                    <div className="space-y-4">
+                      <h4 className="text-sm font-medium text-muted-foreground">均值回归指标</h4>
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <Label>股价 &lt; 20日均线</Label>
+                          <p className="text-sm text-muted-foreground">中期回调</p>
+                        </div>
+                        <Switch
+                          checked={activeStrategy.stockRules.priceBelowMA20 || false}
+                          onCheckedChange={(v) =>
+                            handleUpdateRules(activeStrategy.id, 'stockRules.priceBelowMA20', v)
+                          }
+                        />
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <Label>股价触及布林带下轨</Label>
+                          <p className="text-sm text-muted-foreground">价格偏离均值</p>
+                        </div>
+                        <Switch
+                          checked={activeStrategy.stockRules.bollingerBelowLower || false}
+                          onCheckedChange={(v) =>
+                            handleUpdateRules(activeStrategy.id, 'stockRules.bollingerBelowLower', v)
+                          }
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <Label>RSI超卖阈值</Label>
+                          <span className="text-sm text-muted-foreground">
+                            ≤ {activeStrategy.stockRules.rsiOversold || 30}
+                          </span>
+                        </div>
+                        <Slider
+                          value={[activeStrategy.stockRules.rsiOversold || 30]}
+                          min={10}
+                          max={50}
+                          step={5}
+                          onValueChange={([v]) =>
+                            handleUpdateRules(activeStrategy.id, 'stockRules.rsiOversold', v)
+                          }
+                        />
+                        <p className="text-xs text-muted-foreground">RSI低于此值视为超卖（0=禁用）</p>
+                      </div>
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <Label>连续下跌天数</Label>
+                          <span className="text-sm text-muted-foreground">
+                            ≥ {activeStrategy.stockRules.maxConsecutiveDecline || 0}天
+                          </span>
+                        </div>
+                        <Slider
+                          value={[activeStrategy.stockRules.maxConsecutiveDecline || 0]}
+                          min={0}
+                          max={7}
+                          step={1}
+                          onValueChange={([v]) =>
+                            handleUpdateRules(activeStrategy.id, 'stockRules.maxConsecutiveDecline', v)
+                          }
+                        />
+                        <p className="text-xs text-muted-foreground">0=禁用此条件</p>
+                      </div>
+                    </div>
+
+                    {/* 成交量指标 */}
                     <div className="space-y-2">
                       <div className="flex items-center justify-between">
                         <Label>量比阈值</Label>

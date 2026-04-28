@@ -333,7 +333,8 @@ export async function getAllDailyBasic(): Promise<ApiResponse<{
     const dateStr = tradeDate.toISOString().slice(0, 10).replace(/-/g, '');
 
     // 并行请求 daily_basic（资金面数据：换手率、量比）和 bak_daily（名称、收盘价、涨跌幅）
-    const [dailyBasicResult, bakDailyResult] = await Promise.all([
+    // 以及 daily（收盘价、涨跌幅备用源）
+    const [dailyBasicResult, bakDailyResult, dailyResult] = await Promise.all([
       tushareRequest<{
         fields: string[];
         items: (string | number | null)[][];
@@ -346,19 +347,30 @@ export async function getAllDailyBasic(): Promise<ApiResponse<{
       }>('bak_daily', {
         trade_date: dateStr,
       }, 'ts_code,name,close,pct_change,total_mv'),
+      tushareRequest<{
+        fields: string[];
+        items: (string | number | null)[][];
+      }>('daily', {
+        trade_date: dateStr,
+      }, 'ts_code,close,pct_change'),
     ]);
 
     if (dailyBasicResult.success && dailyBasicResult.data && dailyBasicResult.data.items && dailyBasicResult.data.items.length > 0) {
       const dbFields = dailyBasicResult.data.fields || [];
       const bkFields = bakDailyResult.success && bakDailyResult.data ? bakDailyResult.data.fields || [] : [];
+      const dailyFields = dailyResult.success && dailyResult.data ? dailyResult.data.fields || [] : [];
 
       console.log(`[getAllDailyBasic] daily_basic 返回字段: ${dbFields.join(',')}, 条数: ${dailyBasicResult.data.items.length}`);
       if (bakDailyResult.success && bakDailyResult.data) {
         console.log(`[getAllDailyBasic] bak_daily 返回字段: ${bkFields.join(',')}, 条数: ${bakDailyResult.data.items.length}`);
       }
+      if (dailyResult.success && dailyResult.data) {
+        console.log(`[getAllDailyBasic] daily 返回字段: ${dailyFields.join(',')}, 条数: ${dailyResult.data.items.length}`);
+      }
 
       const getDbIdx = (name: string) => dbFields.indexOf(name);
       const getBkIdx = (name: string) => bkFields.indexOf(name);
+      const getDailyIdx = (name: string) => dailyFields.indexOf(name);
 
       const dbTsIdx = getDbIdx('ts_code');
       const dbTrIdx = getDbIdx('turnover_rate');
@@ -373,6 +385,24 @@ export async function getAllDailyBasic(): Promise<ApiResponse<{
       const bkCloseIdx = getBkIdx('close');
       const bkPctChgIdx = getBkIdx('pct_change');
 
+      const dailyTsIdx = getDailyIdx('ts_code');
+      const dailyCloseIdx = getDailyIdx('close');
+      const dailyPctChgIdx = getDailyIdx('pct_change');
+
+      // 构建 daily 映射表（备用：收盘价、涨跌幅）
+      const dailyMap = new Map<string, { close: number; changePercent: number }>();
+      if (dailyResult.success && dailyResult.data && dailyResult.data.items) {
+        for (const item of dailyResult.data.items) {
+          const tsCode = dailyTsIdx >= 0 ? String(item[dailyTsIdx] || '') : '';
+          if (!tsCode) continue;
+          const code = tsCode.split('.')[0];
+          dailyMap.set(code, {
+            close: dailyCloseIdx >= 0 ? Number(item[dailyCloseIdx] || 0) : 0,
+            changePercent: dailyPctChgIdx >= 0 ? Number(item[dailyPctChgIdx] || 0) : 0,
+          });
+        }
+      }
+
       // 构建 bak_daily 映射表（用于补充 name/close/changePercent）
       const bakDailyMap = new Map<string, { name: string; close: number; changePercent: number }>();
       if (bakDailyResult.success && bakDailyResult.data && bakDailyResult.data.items) {
@@ -385,6 +415,15 @@ export async function getAllDailyBasic(): Promise<ApiResponse<{
             close: bkCloseIdx >= 0 ? Number(item[bkCloseIdx] || 0) : 0,
             changePercent: bkPctChgIdx >= 0 ? Number(item[bkPctChgIdx] || 0) : 0,
           });
+        }
+      }
+      // 如果 bak_daily 无数据，使用 daily 作为备用
+      if (bakDailyMap.size === 0 && dailyMap.size > 0) {
+        console.log(`[getAllDailyBasic] bak_daily 无数据，使用 daily 接口作为备用`);
+        for (const [code, data] of dailyMap) {
+          if (!bakDailyMap.has(code)) {
+            bakDailyMap.set(code, { name: '', close: data.close, changePercent: data.changePercent });
+          }
         }
       }
 

@@ -376,7 +376,7 @@ const validateStockRules = useMemo(() => {
         if (rules.volumeRatio > 0) {
           params.set('minVolumeRatio', rules.volumeRatio.toString());
         }
-        // 技术面规则
+        // 趋势指标
         if (rules.priceAboveMA5) {
           params.set('priceAboveMA5', 'true');
         }
@@ -385,6 +385,22 @@ const validateStockRules = useMemo(() => {
         }
         if (rules.weeklyMACDGoldenCross) {
           params.set('weeklyMACDGoldenCross', 'true');
+        }
+        // 均值回归指标
+        if (rules.priceBelowMA5) {
+          params.set('priceBelowMA5', 'true');
+        }
+        if (rules.priceBelowMA20) {
+          params.set('priceBelowMA20', 'true');
+        }
+        if (rules.rsiOversold !== undefined && rules.rsiOversold > 0) {
+          params.set('rsiOversold', rules.rsiOversold.toString());
+        }
+        if (rules.bollingerBelowLower) {
+          params.set('bollingerBelowLower', 'true');
+        }
+        if (rules.maxConsecutiveDecline !== undefined && rules.maxConsecutiveDecline > 0) {
+          params.set('maxConsecutiveDecline', rules.maxConsecutiveDecline.toString());
         }
         // 板块涨幅规则
         if (rules.minSectorGain > 0) {

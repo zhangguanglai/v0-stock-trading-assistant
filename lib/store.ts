@@ -550,13 +550,17 @@ export const useStockStore = create<StockStore>()(
     }),
     {
       name: 'stock-investment-store',
-      version: 1,
+      version: 2,
       migrate: (persistedState: unknown, version: number) => {
-        console.log(`[Store Migration] 检测到版本升级: v${version} -> v1`);
-        if (version === 0) {
-          console.log('[Store Migration] v0 -> v1: 兼容旧版本数据结构');
+        console.log(`[Store Migration] 检测到版本升级: v${version} -> v2`);
+        const state = persistedState as StockStore;
+        if (version < 2) {
+          console.log('[Store Migration] 升级到v2: 重置策略为新的3个默认策略');
+          // 清除旧策略，让 initializeDefaultStrategy 重新创建
+          state.strategies = [];
+          state.activeStrategyId = null;
         }
-        return persistedState as StockStore;
+        return state;
       },
       partialize: (state) => ({
         strategies: state.strategies,
@@ -704,12 +708,180 @@ export const initializeDefaultStrategy = async () => {
       // 数据库无策略，检查store中是否有（可能来自localStorage）
       const { strategies, addStrategy } = useStockStore.getState();
       if (strategies.length === 0) {
-        // 创建默认策略并同步到数据库
-        const defaultStrategy = {
-          name: '波段交易系统',
+        // 创建3个默认策略并同步到数据库
+        const defaultStrategies = [
+          {
+            name: '趋势跟踪策略',
+            cycle: 'swing' as const,
+            status: 'active' as const,
+            stockRules: {
+              strategyType: 'trend' as const,
+              priceAboveMA5: true,
+              priceAboveMA20: true,
+              weeklyMACDGoldenCross: true,
+              volumeRatio: 1.5,
+              minROE: 10,
+              maxDebtRatio: 50,
+              maxPEPercentile: 30,
+              minTurnoverRate5D: 2,
+              minMarketCap: 30,
+              maxMarketCap: 300,
+              minSectorGain: 2,
+              priceBelowMA5: false,
+              priceBelowMA20: false,
+              rsiOversold: 0,
+              bollingerBelowLower: false,
+              maxConsecutiveDecline: 0,
+            },
+            buyRules: {
+              ma5CrossMa20: true,
+              macdGoldenCross: true,
+              candleConfirm: true,
+              volumeConfirm: true,
+              priceBounceFromMA20: false,
+              rsiBounceFromOversold: false,
+              bollingerBounce: false,
+              volumeShrinkThenExpand: false,
+              batchBuyRatios: [0.3, 0.3, 0.4],
+              addPositionOnDip: 5,
+              addPositionOnMA60: true,
+            },
+            sellRules: {
+              stopLossPercent: 8,
+              takeProfitPercent: 15,
+              trailingStopPercent: 5,
+              timeStopDays: 20,
+              timeStopMinGain: 3,
+              partialTakeProfitPercent: 10,
+            },
+            moneyRules: {
+              totalCapital: 200000,
+              maxSingleStockPercent: 20,
+              maxSectorPercent: 40,
+              minCashPercent: 10,
+              maxPositions: 5,
+            },
+          },
+          {
+            name: '均值回归策略',
+            cycle: 'short' as const,
+            status: 'inactive' as const,
+            stockRules: {
+              strategyType: 'mean-reversion' as const,
+              priceAboveMA5: false,
+              priceAboveMA20: false,
+              weeklyMACDGoldenCross: false,
+              volumeRatio: 1,
+              minROE: 5,
+              maxDebtRatio: 60,
+              maxPEPercentile: 50,
+              minTurnoverRate5D: 1,
+              minMarketCap: 10,
+              maxMarketCap: 300,
+              minSectorGain: 0,
+              priceBelowMA5: false,
+              priceBelowMA20: true,
+              rsiOversold: 35,
+              bollingerBelowLower: false,
+              maxConsecutiveDecline: 2,
+            },
+            buyRules: {
+              ma5CrossMa20: false,
+              macdGoldenCross: false,
+              candleConfirm: false,
+              volumeConfirm: false,
+              priceBounceFromMA20: true,
+              rsiBounceFromOversold: true,
+              bollingerBounce: true,
+              volumeShrinkThenExpand: true,
+              batchBuyRatios: [0.5, 0.5],
+              addPositionOnDip: 3,
+              addPositionOnMA60: false,
+            },
+            sellRules: {
+              stopLossPercent: 5,
+              takeProfitPercent: 8,
+              trailingStopPercent: 3,
+              timeStopDays: 10,
+              timeStopMinGain: 2,
+              partialTakeProfitPercent: 5,
+            },
+            moneyRules: {
+              totalCapital: 200000,
+              maxSingleStockPercent: 15,
+              maxSectorPercent: 30,
+              minCashPercent: 20,
+              maxPositions: 3,
+            },
+          },
+          {
+            name: '价值投资策略',
+            cycle: 'long' as const,
+            status: 'inactive' as const,
+            stockRules: {
+              strategyType: 'trend' as const,
+              priceAboveMA5: false,
+              priceAboveMA20: false,
+              weeklyMACDGoldenCross: false,
+              volumeRatio: 1,
+              minROE: 15,
+              maxDebtRatio: 40,
+              maxPEPercentile: 25,
+              minTurnoverRate5D: 1,
+              minMarketCap: 100,
+              maxMarketCap: 2000,
+              minSectorGain: 0,
+              priceBelowMA5: false,
+              priceBelowMA20: false,
+              rsiOversold: 0,
+              bollingerBelowLower: false,
+              maxConsecutiveDecline: 0,
+            },
+            buyRules: {
+              ma5CrossMa20: false,
+              macdGoldenCross: false,
+              candleConfirm: false,
+              volumeConfirm: false,
+              priceBounceFromMA20: false,
+              rsiBounceFromOversold: false,
+              bollingerBounce: false,
+              volumeShrinkThenExpand: false,
+              batchBuyRatios: [0.4, 0.3, 0.3],
+              addPositionOnDip: 8,
+              addPositionOnMA60: true,
+            },
+            sellRules: {
+              stopLossPercent: 15,
+              takeProfitPercent: 50,
+              trailingStopPercent: 12,
+              timeStopDays: 90,
+              timeStopMinGain: 10,
+              partialTakeProfitPercent: 20,
+            },
+            moneyRules: {
+              totalCapital: 200000,
+              maxSingleStockPercent: 25,
+              maxSectorPercent: 50,
+              minCashPercent: 15,
+              maxPositions: 4,
+            },
+          },
+        ];
+        defaultStrategies.forEach(s => addStrategy(s));
+      }
+    }
+  } catch (err) {
+    console.error('从数据库加载策略失败，使用localStorage数据:', err);
+    // 数据库连接失败，降级使用localStorage中的数据
+    const { strategies, addStrategy } = useStockStore.getState();
+    if (strategies.length === 0) {
+      const defaultStrategies = [
+        {
+          name: '趋势跟踪策略',
           cycle: 'swing' as const,
           status: 'active' as const,
           stockRules: {
+            strategyType: 'trend' as const,
             priceAboveMA5: true,
             priceAboveMA20: true,
             weeklyMACDGoldenCross: true,
@@ -717,27 +889,36 @@ export const initializeDefaultStrategy = async () => {
             minROE: 10,
             maxDebtRatio: 50,
             maxPEPercentile: 30,
-            minTurnoverRate5D: 3,
+            minTurnoverRate5D: 2,
             minMarketCap: 30,
-            maxMarketCap: 200,
+            maxMarketCap: 300,
             minSectorGain: 2,
+            priceBelowMA5: false,
+            priceBelowMA20: false,
+            rsiOversold: 0,
+            bollingerBelowLower: false,
+            maxConsecutiveDecline: 0,
           },
           buyRules: {
             ma5CrossMa20: true,
             macdGoldenCross: true,
             candleConfirm: true,
             volumeConfirm: true,
+            priceBounceFromMA20: false,
+            rsiBounceFromOversold: false,
+            bollingerBounce: false,
+            volumeShrinkThenExpand: false,
             batchBuyRatios: [0.3, 0.3, 0.4],
             addPositionOnDip: 5,
             addPositionOnMA60: true,
           },
           sellRules: {
             stopLossPercent: 8,
-            takeProfitPercent: 25,
+            takeProfitPercent: 15,
             trailingStopPercent: 5,
             timeStopDays: 20,
             timeStopMinGain: 3,
-            partialTakeProfitPercent: 15,
+            partialTakeProfitPercent: 10,
           },
           moneyRules: {
             totalCapital: 200000,
@@ -746,58 +927,113 @@ export const initializeDefaultStrategy = async () => {
             minCashPercent: 10,
             maxPositions: 5,
           },
-        };
-        addStrategy(defaultStrategy);
-      }
-    }
-  } catch (err) {
-    console.error('从数据库加载策略失败，使用localStorage数据:', err);
-    // 数据库连接失败，降级使用localStorage中的数据
-    const { strategies, addStrategy } = useStockStore.getState();
-    if (strategies.length === 0) {
-      const defaultStrategy = {
-        name: '波段交易系统',
-        cycle: 'swing' as const,
-        status: 'active' as const,
-        stockRules: {
-          priceAboveMA5: true,
-          priceAboveMA20: true,
-          weeklyMACDGoldenCross: true,
-          volumeRatio: 1.5,
-          minROE: 10,
-          maxDebtRatio: 50,
-          maxPEPercentile: 30,
-          minTurnoverRate5D: 3,
-          minMarketCap: 30,
-          maxMarketCap: 200,
-          minSectorGain: 2,
         },
-        buyRules: {
-          ma5CrossMa20: true,
-          macdGoldenCross: true,
-          candleConfirm: true,
-          volumeConfirm: true,
-          batchBuyRatios: [0.3, 0.3, 0.4],
-          addPositionOnDip: 5,
-          addPositionOnMA60: true,
+        {
+          name: '均值回归策略',
+          cycle: 'short' as const,
+          status: 'inactive' as const,
+          stockRules: {
+            strategyType: 'mean-reversion' as const,
+            priceAboveMA5: false,
+            priceAboveMA20: false,
+            weeklyMACDGoldenCross: false,
+            volumeRatio: 1,
+            minROE: 5,
+            maxDebtRatio: 60,
+            maxPEPercentile: 50,
+            minTurnoverRate5D: 1,
+            minMarketCap: 10,
+            maxMarketCap: 300,
+            minSectorGain: 0,
+            priceBelowMA5: false,
+            priceBelowMA20: true,
+            rsiOversold: 35,
+            bollingerBelowLower: false,
+            maxConsecutiveDecline: 2,
+          },
+          buyRules: {
+            ma5CrossMa20: false,
+            macdGoldenCross: false,
+            candleConfirm: false,
+            volumeConfirm: false,
+            priceBounceFromMA20: true,
+            rsiBounceFromOversold: true,
+            bollingerBounce: true,
+            volumeShrinkThenExpand: true,
+            batchBuyRatios: [0.5, 0.5],
+            addPositionOnDip: 3,
+            addPositionOnMA60: false,
+          },
+          sellRules: {
+            stopLossPercent: 5,
+            takeProfitPercent: 8,
+            trailingStopPercent: 3,
+            timeStopDays: 10,
+            timeStopMinGain: 2,
+            partialTakeProfitPercent: 5,
+          },
+          moneyRules: {
+            totalCapital: 200000,
+            maxSingleStockPercent: 15,
+            maxSectorPercent: 30,
+            minCashPercent: 20,
+            maxPositions: 3,
+          },
         },
-        sellRules: {
-          stopLossPercent: 8,
-          takeProfitPercent: 25,
-          trailingStopPercent: 5,
-          timeStopDays: 20,
-          timeStopMinGain: 3,
-          partialTakeProfitPercent: 15,
+        {
+          name: '价值投资策略',
+          cycle: 'long' as const,
+          status: 'inactive' as const,
+          stockRules: {
+            strategyType: 'trend' as const,
+            priceAboveMA5: false,
+            priceAboveMA20: false,
+            weeklyMACDGoldenCross: false,
+            volumeRatio: 1,
+            minROE: 15,
+            maxDebtRatio: 40,
+            maxPEPercentile: 25,
+            minTurnoverRate5D: 1,
+            minMarketCap: 100,
+            maxMarketCap: 2000,
+            minSectorGain: 0,
+            priceBelowMA5: false,
+            priceBelowMA20: false,
+            rsiOversold: 0,
+            bollingerBelowLower: false,
+            maxConsecutiveDecline: 0,
+          },
+          buyRules: {
+            ma5CrossMa20: false,
+            macdGoldenCross: false,
+            candleConfirm: false,
+            volumeConfirm: false,
+            priceBounceFromMA20: false,
+            rsiBounceFromOversold: false,
+            bollingerBounce: false,
+            volumeShrinkThenExpand: false,
+            batchBuyRatios: [0.4, 0.3, 0.3],
+            addPositionOnDip: 8,
+            addPositionOnMA60: true,
+          },
+          sellRules: {
+            stopLossPercent: 15,
+            takeProfitPercent: 50,
+            trailingStopPercent: 12,
+            timeStopDays: 90,
+            timeStopMinGain: 10,
+            partialTakeProfitPercent: 20,
+          },
+          moneyRules: {
+            totalCapital: 200000,
+            maxSingleStockPercent: 25,
+            maxSectorPercent: 50,
+            minCashPercent: 15,
+            maxPositions: 4,
+          },
         },
-        moneyRules: {
-          totalCapital: 200000,
-          maxSingleStockPercent: 20,
-          maxSectorPercent: 40,
-          minCashPercent: 10,
-          maxPositions: 5,
-        },
-      };
-      addStrategy(defaultStrategy);
+      ];
+      defaultStrategies.forEach(s => addStrategy(s));
     }
   }
 };

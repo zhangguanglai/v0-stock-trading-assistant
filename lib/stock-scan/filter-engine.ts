@@ -26,7 +26,14 @@ export interface FilterContext {
   technical?: {
     ma5?: number;
     ma20?: number;
+    ma60?: number;
     weeklyMACDGoldenCross?: boolean;
+    // 均值回归指标
+    rsi?: number;                    // RSI相对强弱指标
+    bollingerLower?: number;         // 布林带下轨
+    bollingerUpper?: number;         // 布林带上轨
+    bollingerMid?: number;           // 布林带中轨
+    consecutiveDecline?: number;     // 连续下跌天数
   } | null;
   sector?: {
     sectorCode: string;
@@ -183,7 +190,7 @@ export function checkStockRules(
     }
   }
 
-  // ── 技术面规则（硬过滤） ──
+  // ── 趋势策略技术面规则（硬过滤） ──
 
   // 股价 > MA5
   if (rules.priceAboveMA5) {
@@ -193,7 +200,6 @@ export function checkStockRules(
         pass: false,
         value: '无数据',
       });
-      // 无数据不淘汰（与 funnel 一致）
     } else {
       const pass = ctx.quote.price > ctx.technical.ma5;
       ruleChecks.push({
@@ -213,7 +219,6 @@ export function checkStockRules(
         pass: false,
         value: '无数据',
       });
-      // 无数据不淘汰
     } else {
       const pass = ctx.quote.price > ctx.technical.ma20;
       ruleChecks.push({
@@ -233,13 +238,89 @@ export function checkStockRules(
         pass: false,
         value: '无数据',
       });
-      // 无数据不淘汰
     } else {
       const pass = ctx.technical.weeklyMACDGoldenCross;
       ruleChecks.push({
         rule: `周MACD金叉`,
         pass,
         value: pass ? '已金叉' : '未金叉',
+      });
+      if (!pass) meetsAllRules = false;
+    }
+  }
+
+  // ── 均值回归策略技术面规则 ──
+
+  // 股价 < MA5（跌破短期均线）
+  if (rules.priceBelowMA5) {
+    if (!ctx.technical || !ctx.technical.ma5 || ctx.technical.ma5 <= 0) {
+      ruleChecks.push({ rule: `股价 < MA5`, pass: false, value: '无数据' });
+    } else {
+      const pass = ctx.quote.price < ctx.technical.ma5;
+      ruleChecks.push({
+        rule: `股价 < MA5`,
+        pass,
+        value: `现价${ctx.quote.price.toFixed(2)} MA5=${ctx.technical.ma5.toFixed(2)}`,
+      });
+      if (!pass) meetsAllRules = false;
+    }
+  }
+
+  // 股价 < MA20（跌破中期均线）
+  if (rules.priceBelowMA20) {
+    if (!ctx.technical || !ctx.technical.ma20 || ctx.technical.ma20 <= 0) {
+      ruleChecks.push({ rule: `股价 < MA20`, pass: false, value: '无数据' });
+    } else {
+      const pass = ctx.quote.price < ctx.technical.ma20;
+      ruleChecks.push({
+        rule: `股价 < MA20`,
+        pass,
+        value: `现价${ctx.quote.price.toFixed(2)} MA20=${ctx.technical.ma20.toFixed(2)}`,
+      });
+      if (!pass) meetsAllRules = false;
+    }
+  }
+
+  // RSI超卖
+  if (rules.rsiOversold !== undefined && rules.rsiOversold > 0) {
+    if (!ctx.technical || ctx.technical.rsi === undefined) {
+      ruleChecks.push({ rule: `RSI超卖 < ${rules.rsiOversold}`, pass: false, value: '无数据' });
+    } else {
+      const pass = ctx.technical.rsi <= rules.rsiOversold;
+      ruleChecks.push({
+        rule: `RSI超卖 < ${rules.rsiOversold}`,
+        pass,
+        value: `RSI=${ctx.technical.rsi.toFixed(1)}`,
+      });
+      if (!pass) meetsAllRules = false;
+    }
+  }
+
+  // 布林带下轨
+  if (rules.bollingerBelowLower) {
+    if (!ctx.technical || ctx.technical.bollingerLower === undefined) {
+      ruleChecks.push({ rule: `股价触及布林带下轨`, pass: false, value: '无数据' });
+    } else {
+      const pass = ctx.quote.price <= ctx.technical.bollingerLower;
+      ruleChecks.push({
+        rule: `股价触及布林带下轨`,
+        pass,
+        value: `现价${ctx.quote.price.toFixed(2)} 下轨=${ctx.technical.bollingerLower.toFixed(2)}`,
+      });
+      if (!pass) meetsAllRules = false;
+    }
+  }
+
+  // 连续下跌天数
+  if (rules.maxConsecutiveDecline !== undefined && rules.maxConsecutiveDecline > 0) {
+    if (!ctx.technical || ctx.technical.consecutiveDecline === undefined) {
+      ruleChecks.push({ rule: `连续下跌 ≥ ${rules.maxConsecutiveDecline}天`, pass: false, value: '无数据' });
+    } else {
+      const pass = ctx.technical.consecutiveDecline >= rules.maxConsecutiveDecline;
+      ruleChecks.push({
+        rule: `连续下跌 ≥ ${rules.maxConsecutiveDecline}天`,
+        pass,
+        value: `${ctx.technical.consecutiveDecline}天`,
       });
       if (!pass) meetsAllRules = false;
     }
@@ -268,10 +349,47 @@ export function checkStockRules(
 
   // ── 综合评分调整 ──
 
-  if (ctx.quote.changePercent > 0 && ctx.quote.changePercent < 5) score += 10;
-  else if (ctx.quote.changePercent >= 5) score += 5;
-  else if (ctx.quote.changePercent < -5) score -= 15;
+  // 根据策略类型调整评分逻辑
+  const isMeanReversion = rules.strategyType === 'mean-reversion';
 
+  if (isMeanReversion) {
+    // 均值回归策略评分：回调越深、超卖越严重，分数越高
+    if (ctx.quote.changePercent < -3 && ctx.quote.changePercent > -8) score += 15;
+    else if (ctx.quote.changePercent < -1 && ctx.quote.changePercent >= -3) score += 10;
+    else if (ctx.quote.changePercent >= 0) score -= 10; // 上涨的股票不适合均值回归
+
+    // RSI超卖加分
+    if (ctx.technical && ctx.technical.rsi !== undefined) {
+      if (ctx.technical.rsi < 20) score += 20;
+      else if (ctx.technical.rsi < 30) score += 15;
+      else if (ctx.technical.rsi < 40) score += 8;
+    }
+
+    // 布林带偏离加分
+    if (ctx.technical && ctx.technical.bollingerLower !== undefined && ctx.technical.bollingerMid !== undefined) {
+      const bollingerDeviation = (ctx.quote.price - ctx.technical.bollingerMid) / (ctx.technical.bollingerMid - ctx.technical.bollingerLower);
+      if (bollingerDeviation < -1) score += 15;
+      else if (bollingerDeviation < -0.5) score += 10;
+    }
+
+    // 连续下跌加分
+    if (ctx.technical && ctx.technical.consecutiveDecline !== undefined) {
+      if (ctx.technical.consecutiveDecline >= 5) score += 10;
+      else if (ctx.technical.consecutiveDecline >= 3) score += 5;
+    }
+
+    // 缩量回调加分（抛压减轻）
+    if (ctx.basicData && ctx.basicData.volumeRatio < 0.8) score += 8;
+    else if (ctx.basicData && ctx.basicData.volumeRatio < 1.0) score += 4;
+
+  } else {
+    // 趋势策略评分（原有逻辑）
+    if (ctx.quote.changePercent > 0 && ctx.quote.changePercent < 5) score += 10;
+    else if (ctx.quote.changePercent >= 5) score += 5;
+    else if (ctx.quote.changePercent < -5) score -= 15;
+  }
+
+  // 基本面评分（两种策略通用）
   if (ctx.basicData) {
     if (ctx.basicData.marketCap > 0 && ctx.basicData.marketCap < 50) score += 15;
     else if (ctx.basicData.marketCap < 100) score += 10;
