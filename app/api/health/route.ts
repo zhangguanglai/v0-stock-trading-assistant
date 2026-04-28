@@ -7,8 +7,8 @@ export async function GET() {
   try {
     // 动态导入，仅在运行时加载 SQLite
     const { getDbStats } = await import('@/lib/db/sqlite');
-    const stats = getDbStats();
-    
+    const stats = await getDbStats();
+
     return NextResponse.json({
       status: 'healthy',
       timestamp: Date.now(),

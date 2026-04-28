@@ -143,7 +143,7 @@ async function runOptimization(request: OptimizeRequest): Promise<OptimizeRespon
 
   // 预加载数据（只执行一次，所有组合共享）
   const dataLoadStart = Date.now();
-  const cache = preloadBacktestData(request.params.startDate, request.params.endDate);
+  const cache = await preloadBacktestData(request.params.startDate, request.params.endDate);
   const dataLoadTimeMs = Date.now() - dataLoadStart;
 
   if (cache.tradeDates.length === 0) {

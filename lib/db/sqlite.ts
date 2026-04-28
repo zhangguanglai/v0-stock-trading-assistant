@@ -1,22 +1,30 @@
 // SQLite 本地数据库管理
 // 使用 Node.js 22+ 内置的 node:sqlite（无需任何外部原生依赖）
+// 注意：node:sqlite 使用动态导入，避免 Next.js 构建时加载
 
-import { DatabaseSync } from 'node:sqlite';
 import path from 'path';
 import fs from 'fs';
 
 const DB_DIR = path.join(process.cwd(), 'data');
 const DB_PATH = path.join(DB_DIR, 'stock-history.db');
 
-let db: DatabaseSync | null = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let db: any | null = null;
+
+// 动态导入 node:sqlite，避免构建时加载
+async function getDatabaseSync() {
+  const { DatabaseSync } = await import('node:sqlite');
+  return DatabaseSync;
+}
 
 // 获取数据库实例（单例）
-export function getDatabase(): DatabaseSync {
+export async function getDatabase() {
   if (!db) {
     if (!fs.existsSync(DB_DIR)) {
       fs.mkdirSync(DB_DIR, { recursive: true });
     }
 
+    const DatabaseSync = await getDatabaseSync();
     db = new DatabaseSync(DB_PATH);
     initTables();
   }
@@ -83,8 +91,8 @@ function initTables() {
 const nameCache = new Map<string, string>();
 
 // 批量插入股票名称
-export function insertStockNames(data: { code: string; name: string }[]): void {
-  const database = getDatabase();
+export async function insertStockNames(data: { code: string; name: string }[]): Promise<void> {
+  const database = await getDatabase();
   const insert = database.prepare('INSERT OR REPLACE INTO stock_names (code, name) VALUES (?, ?)');
   for (const item of data) {
     insert.run(item.code, item.name);
@@ -93,11 +101,11 @@ export function insertStockNames(data: { code: string; name: string }[]): void {
 }
 
 // 获取股票名称
-export function getStockName(code: string): string {
+export async function getStockName(code: string): Promise<string> {
   if (nameCache.has(code)) {
     return nameCache.get(code)!;
   }
-  const database = getDatabase();
+  const database = await getDatabase();
   const row = database.prepare('SELECT name FROM stock_names WHERE code = ?').get(code) as { name: string } | undefined;
   const name = row?.name || code;
   nameCache.set(code, name);
@@ -105,7 +113,7 @@ export function getStockName(code: string): string {
 }
 
 // 批量插入K线数据
-export function insertKlineBatch(data: {
+export async function insertKlineBatch(data: {
   code: string;
   date: string;
   open: number;
@@ -115,8 +123,8 @@ export function insertKlineBatch(data: {
   volume: number;
   amount: number;
   changePercent: number;
-}[]): number {
-  const database = getDatabase();
+}[]): Promise<number> {
+  const database = await getDatabase();
 
   const insert = database.prepare(`
     INSERT OR REPLACE INTO daily_kline (code, date, open, high, low, close, volume, amount, change_percent)
@@ -141,7 +149,7 @@ export function insertKlineBatch(data: {
 }
 
 // 批量插入基本面数据
-export function insertBasicBatch(data: {
+export async function insertBasicBatch(data: {
   code: string;
   date: string;
   marketCap: number;
@@ -149,8 +157,8 @@ export function insertBasicBatch(data: {
   pb: number;
   turnoverRate: number;
   volumeRatio: number;
-}[]): number {
-  const database = getDatabase();
+}[]): Promise<number> {
+  const database = await getDatabase();
 
   const insert = database.prepare(`
     INSERT OR REPLACE INTO daily_basic (code, date, market_cap, pe, pb, turnover_rate, volume_ratio)
@@ -173,11 +181,11 @@ export function insertBasicBatch(data: {
 }
 
 // 查询单只股票历史K线
-export function getKlineHistory(
+export async function getKlineHistory(
   code: string,
   startDate: string,
   endDate: string
-): {
+): Promise<{
   date: string;
   open: number;
   high: number;
@@ -186,8 +194,8 @@ export function getKlineHistory(
   volume: number;
   amount: number;
   changePercent: number;
-}[] {
-  const database = getDatabase();
+}[]> {
+  const database = await getDatabase();
 
   const stmt = database.prepare(`
     SELECT date, open, high, low, close, volume, amount, change_percent as changePercent
@@ -209,7 +217,7 @@ export function getKlineHistory(
 }
 
 // 查询某日期全市场数据
-export function getMarketDataByDate(date: string): {
+export async function getMarketDataByDate(date: string): Promise<{
   code: string;
   open: number;
   high: number;
@@ -223,8 +231,8 @@ export function getMarketDataByDate(date: string): {
   pb?: number;
   turnoverRate?: number;
   volumeRatio?: number;
-}[] {
-  const database = getDatabase();
+}[]> {
+  const database = await getDatabase();
 
   const stmt = database.prepare(`
     SELECT
@@ -264,12 +272,12 @@ export function getMarketDataByDate(date: string): {
 }
 
 // 获取数据库统计信息
-export function getDbStats(): {
+export async function getDbStats(): Promise<{
   klineCount: number;
   basicCount: number;
   dateRange: { min: string; max: string };
-} {
-  const database = getDatabase();
+}> {
+  const database = await getDatabase();
 
   const klineResult = database.prepare('SELECT COUNT(*) as count FROM daily_kline').get() as { count: number };
   const basicResult = database.prepare('SELECT COUNT(*) as count FROM daily_basic').get() as { count: number };
@@ -286,8 +294,8 @@ export function getDbStats(): {
 }
 
 // 更新记录
-export function updateLog(tableName: string, date: string, count: number) {
-  const database = getDatabase();
+export async function updateLog(tableName: string, date: string, count: number): Promise<void> {
+  const database = await getDatabase();
   database.prepare(`
     INSERT OR REPLACE INTO update_log (table_name, last_update, record_count)
     VALUES (?, ?, ?)
@@ -295,8 +303,8 @@ export function updateLog(tableName: string, date: string, count: number) {
 }
 
 // 获取上次更新时间
-export function getLastUpdate(tableName: string): string | null {
-  const database = getDatabase();
+export async function getLastUpdate(tableName: string): Promise<string | null> {
+  const database = await getDatabase();
   const row = database.prepare('SELECT last_update FROM update_log WHERE table_name = ?').get(tableName) as { last_update: string } | undefined;
   return row?.last_update || null;
 }
@@ -320,8 +328,8 @@ export interface BacktestRecord {
 }
 
 // 获取回测历史记录
-export function getBacktestHistory(limit: number = 50): BacktestRecord[] {
-  const database = getDatabase();
+export async function getBacktestHistory(limit: number = 50): Promise<BacktestRecord[]> {
+  const database = await getDatabase();
   try {
     return database.prepare(
       `SELECT * FROM backtest_results ORDER BY created_at DESC LIMIT ?`
@@ -332,7 +340,7 @@ export function getBacktestHistory(limit: number = 50): BacktestRecord[] {
 }
 
 // 删除回测记录
-export function deleteBacktestRecord(id: number): void {
-  const database = getDatabase();
+export async function deleteBacktestRecord(id: number): Promise<void> {
+  const database = await getDatabase();
   database.prepare('DELETE FROM backtest_results WHERE id = ?').run(id);
 }

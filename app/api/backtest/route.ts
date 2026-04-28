@@ -3,9 +3,19 @@
 // 优化版本：内存预加载 + 批量计算技术指标
 
 import { NextRequest, NextResponse } from 'next/server';
-import { getDatabase, getStockName } from '@/lib/db/sqlite';
 import type { BacktestParams, BacktestResult, BacktestTrade, EquityPoint } from '@/lib/types';
 import { checkStockRules, type FilterContext } from '@/lib/stock-scan/filter-engine';
+
+// 动态导入sqlite，避免构建时加载node:sqlite
+async function getDb() {
+  const { getDatabase } = await import('@/lib/db/sqlite');
+  return getDatabase();
+}
+
+async function getName(code: string) {
+  const { getStockName } = await import('@/lib/db/sqlite');
+  return getStockName(code);
+}
 
 export const dynamic = 'force-dynamic';
 
@@ -92,8 +102,8 @@ export interface BacktestDataCache {
 }
 
 // 预加载整个回测期间的数据到内存
-export function preloadBacktestData(startDate: string, endDate: string): BacktestDataCache {
-  const database = getDatabase();
+export async function preloadBacktestData(startDate: string, endDate: string): Promise<BacktestDataCache> {
+  const database = await getDb();
   const start = startDate.replace(/-/g, '');
   const end = endDate.replace(/-/g, '');
 
@@ -562,7 +572,7 @@ export async function runBacktestWithCache(
 
         positions.push({
           code: stock.code,
-          name: getStockName(stock.code),
+          name: await getName(stock.code),
           entryPrice: buyPrice,
           shares,
           entryDate: dateStr,
@@ -662,7 +672,7 @@ export async function POST(request: NextRequest) {
     const result = await runBacktest(params, rules);
 
     try {
-      saveBacktestResult(result);
+      await saveBacktestResult(result);
     } catch (dbError) {
       console.warn('保存回测结果失败（不影响回测结果）:', dbError);
     }
@@ -678,8 +688,8 @@ export async function POST(request: NextRequest) {
   }
 }
 
-function saveBacktestResult(result: BacktestResult) {
-  const database = getDatabase();
+async function saveBacktestResult(result: BacktestResult) {
+  const database = await getDb();
   database.exec(`
     CREATE TABLE IF NOT EXISTS backtest_results (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

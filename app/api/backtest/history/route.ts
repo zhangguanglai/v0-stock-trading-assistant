@@ -1,6 +1,5 @@
 // 回测历史记录 API
 import { NextRequest, NextResponse } from 'next/server';
-import { getBacktestHistory, deleteBacktestRecord } from '@/lib/db/sqlite';
 
 export const dynamic = 'force-dynamic';
 
@@ -9,9 +8,11 @@ export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const limit = parseInt(searchParams.get('limit') || '50', 10);
-    
-    const records = getBacktestHistory(limit);
-    
+
+    // 动态导入，避免构建时加载 SQLite
+    const { getBacktestHistory } = await import('@/lib/db/sqlite');
+    const records = await getBacktestHistory(limit);
+
     return NextResponse.json({
       success: true,
       data: records,
@@ -32,16 +33,18 @@ export async function DELETE(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const id = parseInt(searchParams.get('id') || '0', 10);
-    
+
     if (!id) {
       return NextResponse.json({
         success: false,
         error: '缺少记录ID',
       });
     }
-    
-    deleteBacktestRecord(id);
-    
+
+    // 动态导入，避免构建时加载 SQLite
+    const { deleteBacktestRecord } = await import('@/lib/db/sqlite');
+    await deleteBacktestRecord(id);
+
     return NextResponse.json({
       success: true,
       message: '记录已删除',
