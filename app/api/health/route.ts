@@ -1,11 +1,12 @@
 // 健康检查 API
 import { NextResponse } from 'next/server';
-import { getDbStats } from '@/lib/db/sqlite';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
+    // 动态导入，仅在运行时加载 SQLite
+    const { getDbStats } = await import('@/lib/db/sqlite');
     const stats = getDbStats();
     
     return NextResponse.json({
