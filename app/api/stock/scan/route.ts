@@ -295,7 +295,13 @@ async function getIndustryRPSMap(): Promise<Map<string, number>> {
   const map = new Map<string, number>();
 
   try {
-    const response = await fetch('http://localhost:3000/api/stock/industry-rps');
+    // 使用相对路径，兼容生产环境
+    const baseUrl = process.env.VERCEL_URL
+      ? `https://${process.env.VERCEL_URL}`
+      : process.env.RAILWAY_STATIC_URL
+        ? process.env.RAILWAY_STATIC_URL
+        : 'http://localhost:3000';
+    const response = await fetch(`${baseUrl}/api/stock/industry-rps`);
     const result = await response.json();
 
     if (result.success && result.data) {
@@ -911,7 +917,7 @@ export async function GET(request: NextRequest) {
       const capitalDetails: string[] = [];
       if (rules.minTurnoverRate && rules.minTurnoverRate > 0) capitalDetails.push(`换手率≥${rules.minTurnoverRate}%`);
       if (rules.minVolumeRatio && rules.minVolumeRatio > 0) capitalDetails.push(`量比≥${rules.minVolumeRatio}`);
-      if (rules.minSectorGain && rules.minSectorGain > 0) capitalDetails.push(`板块涨幅≥${rules.minSectorGain}%`);
+      if (rules.minSectorGain && rules.minSectorGain > 0) capitalDetails.push(`行业RPS≥${rules.minSectorGain}`);
       
       funnelSteps.push({
         label: '资金面筛选',

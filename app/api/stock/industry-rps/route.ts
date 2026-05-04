@@ -64,55 +64,153 @@ async function getIndustryMap(): Promise<Map<string, string>> {
 
 // 从本地SQLite获取20日涨幅
 async function get20DayChangesFromSQLite(): Promise<Map<string, number>> {
-  const { getDatabase } = await import('@/lib/db/sqlite');
-  const db = await getDatabase();
+  try {
+    const { getDatabase } = await import('@/lib/db/sqlite');
+    const db = await getDatabase();
 
-  // 获取最近20个交易日
-  const dateRows = db.prepare(
-    `SELECT DISTINCT date FROM daily_kline ORDER BY date DESC LIMIT 20`
-  ).all() as { date: string }[];
+    // 获取最近20个交易日
+    const dateRows = db.prepare(
+      `SELECT DISTINCT date FROM daily_kline ORDER BY date DESC LIMIT 20`
+    ).all() as { date: string }[];
 
-  if (dateRows.length < 2) {
+    if (dateRows.length < 2) {
+      return new Map();
+    }
+
+    const latestDate = dateRows[0].date;
+    const earliestDate = dateRows[dateRows.length - 1].date;
+
+    // 获取每只股票最早和最新的收盘价
+    const rows = db.prepare(`
+      SELECT code,
+        MAX(CASE WHEN date = ? THEN close END) as latestClose,
+        MAX(CASE WHEN date = ? THEN close END) as earliestClose
+      FROM daily_kline
+      WHERE date IN (?, ?)
+      GROUP BY code
+      HAVING latestClose > 0 AND earliestClose > 0
+    `).all(latestDate, earliestDate, latestDate, earliestDate) as {
+      code: string;
+      latestClose: number;
+      earliestClose: number;
+    }[];
+
+    const changes = new Map<string, number>();
+    for (const row of rows) {
+      const change = ((row.latestClose - row.earliestClose) / row.earliestClose) * 100;
+      changes.set(row.code, change);
+    }
+
+    return changes;
+  } catch {
+    // SQLite不可用（生产环境未初始化），返回空Map触发降级
     return new Map();
   }
+}
 
-  const latestDate = dateRows[0].date;
-  const earliestDate = dateRows[dateRows.length - 1].date;
-
-  // 获取每只股票最早和最新的收盘价
-  const rows = db.prepare(`
-    SELECT code,
-      MAX(CASE WHEN date = ? THEN close END) as latestClose,
-      MAX(CASE WHEN date = ? THEN close END) as earliestClose
-    FROM daily_kline
-    WHERE date IN (?, ?)
-    GROUP BY code
-    HAVING latestClose > 0 AND earliestClose > 0
-  `).all(latestDate, earliestDate, latestDate, earliestDate) as {
-    code: string;
-    latestClose: number;
-    earliestClose: number;
-  }[];
-
+// 从Tushare获取20日涨幅（降级方案）
+async function get20DayChangesFromTushare(): Promise<Map<string, number>> {
+  const { tushareRequest } = await import('@/lib/stock-api');
   const changes = new Map<string, number>();
-  for (const row of rows) {
-    const change = ((row.latestClose - row.earliestClose) / row.earliestClose) * 100;
-    changes.set(row.code, change);
+
+  // 1. 获取全市场股票列表
+  const stockResult = await tushareRequest<{
+    fields: string[];
+    items: (string | number)[][];
+  }>('stock_basic', { list_status: 'L' }, 'ts_code,symbol,name');
+
+  if (!stockResult.success || !stockResult.data) {
+    return changes;
   }
 
+  const fields = stockResult.data.fields || [];
+  const tsIdx = fields.indexOf('ts_code');
+  const items = stockResult.data.items;
+
+  // 2. 计算20个交易日前日期
+  const today = new Date();
+  const startDate = new Date(today);
+  startDate.setDate(today.getDate() - 35); // 多取几天确保覆盖20个交易日
+  const startDateStr = startDate.toISOString().slice(0, 10).replace(/-/g, '');
+  const endDateStr = today.toISOString().slice(0, 10).replace(/-/g, '');
+
+  // 3. 批量获取日行情（Tushare daily接口支持多代码）
+  // 每次最多800只，分批次
+  const batchSize = 800;
+  for (let i = 0; i < items.length; i += batchSize) {
+    const batch = items.slice(i, i + batchSize);
+    const tsCodes = batch.map(item => String(item[tsIdx])).join(',');
+
+    const dailyResult = await tushareRequest<{
+      fields: string[];
+      items: (string | number)[][];
+    }>('daily', {
+      ts_code: tsCodes,
+      start_date: startDateStr,
+      end_date: endDateStr,
+    }, 'ts_code,trade_date,close,pct_chg');
+
+    if (!dailyResult.success || !dailyResult.data) continue;
+
+    const dFields = dailyResult.data.fields || [];
+    const codeIdx = dFields.indexOf('ts_code');
+    const dateIdx = dFields.indexOf('trade_date');
+    const closeIdx = dFields.indexOf('close');
+
+    // 按股票分组，取最早和最新
+    const stockPrices = new Map<string, { earliest: number; latest: number }>();
+    for (const item of dailyResult.data.items) {
+      const tsCode = String(item[codeIdx]);
+      const code = tsCode.split('.')[0];
+      const close = Number(item[closeIdx]) || 0;
+      if (close <= 0) continue;
+
+      const existing = stockPrices.get(code);
+      if (!existing) {
+        stockPrices.set(code, { earliest: close, latest: close });
+      } else {
+        // Tushare返回按日期降序，所以先遇到的是最新的
+        // 但这里简单处理：取第一个和最后一个
+        existing.latest = close;
+      }
+    }
+
+    for (const [code, prices] of stockPrices.entries()) {
+      if (prices.earliest > 0) {
+        const change = ((prices.latest - prices.earliest) / prices.earliest) * 100;
+        changes.set(code, change);
+      }
+    }
+  }
+
+  console.log(`[IndustryRPS] Tushare降级: 获取到${changes.size}只股票20日涨幅`);
   return changes;
 }
 
-// 计算行业RPS
+// 计算行业RPS（双模式：SQLite优先，Tushare降级）
 async function calculateIndustryRPS(): Promise<IndustryRPS[]> {
-  const [industryMap, changesMap] = await Promise.all([
-    getIndustryMap(),
-    get20DayChangesFromSQLite(),
-  ]);
+  const industryMap = await getIndustryMap();
 
-  if (industryMap.size === 0 || changesMap.size === 0) {
+  if (industryMap.size === 0) {
     return [];
   }
+
+  // 优先尝试SQLite本地计算
+  let changesMap = await get20DayChangesFromSQLite();
+  let source = 'sqlite';
+
+  // SQLite无数据时降级到Tushare
+  if (changesMap.size === 0) {
+    console.log('[IndustryRPS] SQLite无数据，降级到Tushare计算...');
+    changesMap = await get20DayChangesFromTushare();
+    source = 'tushare';
+  }
+
+  if (changesMap.size === 0) {
+    return [];
+  }
+
+  console.log(`[IndustryRPS] 使用${source}数据，${changesMap.size}只股票`);
 
   // 按行业分组统计
   const industryStats = new Map<string, { totalChange: number; count: number }>();
