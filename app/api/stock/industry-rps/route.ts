@@ -1,140 +1,189 @@
+// 全市场行业RPS20数据 API
+// 使用本地SQLite计算 + 内存缓存（1小时），避免大量Tushare API调用
 import { NextRequest, NextResponse } from 'next/server';
 import { isTushareConfigured, tushareRequest } from '@/lib/stock-api';
 
 export const dynamic = 'force-dynamic';
 
-interface IndustryRPS {
+export interface IndustryRPS {
   industry: string;
-  rps20: number;           // 20日RPS（基于全市场行业排名）
-  change20d: number;       // 20日平均涨跌幅(%)
-  stockCount: number;      // 行业内股票数
+  rps20: number;
+  change20d: number;
+  stockCount: number;
 }
 
-// 获取全市场行业RPS20数据
-export async function GET(request: NextRequest) {
-  try {
-    if (!isTushareConfigured()) {
-      return NextResponse.json({
-        success: false,
-        error: 'Tushare未配置',
-        data: []
-      });
-    }
+// 内存缓存
+let cachedIndustryRPS: IndustryRPS[] | null = null;
+let cacheTimestamp = 0;
+const CACHE_DURATION = 60 * 60 * 1000; // 1小时
 
-    // Step 1: 获取全市场股票基本信息（含行业）
-    const stockBasicResult = await tushareRequest<{
+// 行业映射缓存（stock_basic数据变化极少，缓存1天）
+let cachedIndustryMap: Map<string, string> | null = null;
+let industryMapCacheTime = 0;
+const INDUSTRY_MAP_CACHE = 24 * 60 * 60 * 1000; // 24小时
+
+// 获取股票行业映射（带缓存）
+async function getIndustryMap(): Promise<Map<string, string>> {
+  const now = Date.now();
+  if (cachedIndustryMap && (now - industryMapCacheTime) < INDUSTRY_MAP_CACHE) {
+    return cachedIndustryMap;
+  }
+
+  const map = new Map<string, string>();
+
+  if (!isTushareConfigured()) {
+    return map;
+  }
+
+  try {
+    const result = await tushareRequest<{
       fields: string[];
       items: (string | number)[][];
     }>('stock_basic', { list_status: 'L' }, 'ts_code,symbol,name,industry');
 
-    if (!stockBasicResult.success || !stockBasicResult.data) {
+    if (result.success && result.data) {
+      const fields = result.data.fields || [];
+      const tsIdx = fields.indexOf('ts_code');
+      const industryIdx = fields.indexOf('industry');
+
+      for (const item of result.data.items) {
+        const tsCode = String(item[tsIdx]);
+        const code = tsCode.split('.')[0];
+        const industry = String(item[industryIdx] || '未知');
+        map.set(code, industry);
+      }
+    }
+  } catch (e) {
+    console.error('[IndustryRPS] 获取行业映射失败:', e);
+  }
+
+  cachedIndustryMap = map;
+  industryMapCacheTime = now;
+  return map;
+}
+
+// 从本地SQLite获取20日涨幅
+async function get20DayChangesFromSQLite(): Promise<Map<string, number>> {
+  const { getDatabase } = await import('@/lib/db/sqlite');
+  const db = await getDatabase();
+
+  // 获取最近20个交易日
+  const dateRows = db.prepare(
+    `SELECT DISTINCT date FROM daily_kline ORDER BY date DESC LIMIT 20`
+  ).all() as { date: string }[];
+
+  if (dateRows.length < 2) {
+    return new Map();
+  }
+
+  const latestDate = dateRows[0].date;
+  const earliestDate = dateRows[dateRows.length - 1].date;
+
+  // 获取每只股票最早和最新的收盘价
+  const rows = db.prepare(`
+    SELECT code,
+      MAX(CASE WHEN date = ? THEN close END) as latestClose,
+      MAX(CASE WHEN date = ? THEN close END) as earliestClose
+    FROM daily_kline
+    WHERE date IN (?, ?)
+    GROUP BY code
+    HAVING latestClose > 0 AND earliestClose > 0
+  `).all(latestDate, earliestDate, latestDate, earliestDate) as {
+    code: string;
+    latestClose: number;
+    earliestClose: number;
+  }[];
+
+  const changes = new Map<string, number>();
+  for (const row of rows) {
+    const change = ((row.latestClose - row.earliestClose) / row.earliestClose) * 100;
+    changes.set(row.code, change);
+  }
+
+  return changes;
+}
+
+// 计算行业RPS
+async function calculateIndustryRPS(): Promise<IndustryRPS[]> {
+  const [industryMap, changesMap] = await Promise.all([
+    getIndustryMap(),
+    get20DayChangesFromSQLite(),
+  ]);
+
+  if (industryMap.size === 0 || changesMap.size === 0) {
+    return [];
+  }
+
+  // 按行业分组统计
+  const industryStats = new Map<string, { totalChange: number; count: number }>();
+
+  for (const [code, change] of changesMap.entries()) {
+    const industry = industryMap.get(code);
+    if (!industry || industry === '未知') continue;
+
+    const stat = industryStats.get(industry) || { totalChange: 0, count: 0 };
+    stat.totalChange += change;
+    stat.count += 1;
+    industryStats.set(industry, stat);
+  }
+
+  // 计算各行业平均涨幅并排序
+  const industries = Array.from(industryStats.entries())
+    .map(([name, stat]) => ({
+      industry: name,
+      change20d: stat.count > 0 ? stat.totalChange / stat.count : 0,
+      stockCount: stat.count,
+    }))
+    .sort((a, b) => b.change20d - a.change20d);
+
+  const total = industries.length;
+  if (total === 0) return [];
+
+  // RPS20 = (1 - 排名/总数) × 100
+  return industries.map((item, index) => ({
+    ...item,
+    rps20: total > 1 ? Math.round((1 - index / (total - 1)) * 100) : 100,
+  }));
+}
+
+// GET /api/stock/industry-rps
+export async function GET(request: NextRequest) {
+  try {
+    const now = Date.now();
+
+    // 检查缓存
+    if (cachedIndustryRPS && (now - cacheTimestamp) < CACHE_DURATION) {
       return NextResponse.json({
-        success: false,
-        error: '获取股票基本信息失败',
-        data: []
+        success: true,
+        data: cachedIndustryRPS,
+        total: cachedIndustryRPS.length,
+        cached: true,
+        timestamp: now,
       });
     }
 
-    // Step 2: 按行业分组统计
-    const fields = stockBasicResult.data.fields || [];
-    const industryIdx = fields.indexOf('industry');
-    
-    if (industryIdx < 0) {
+    // 重新计算
+    const result = await calculateIndustryRPS();
+
+    if (result.length === 0) {
       return NextResponse.json({
         success: false,
-        error: '行业字段不存在',
-        data: []
+        error: '无法计算行业RPS，请检查本地数据是否完整',
+        data: [],
+        timestamp: now,
       });
     }
 
-    const industryStocks = new Map<string, string[]>(); // industry -> [codes]
-    
-    stockBasicResult.data.items.forEach(item => {
-      const tsCode = String(item[0]);
-      const code = tsCode.split('.')[0];
-      const industry = String(item[industryIdx] || '未知');
-      
-      if (!industryStocks.has(industry)) {
-        industryStocks.set(industry, []);
-      }
-      industryStocks.get(industry)!.push(code);
-    });
-
-    // Step 3: 获取各行业代表性股票的20日涨幅（采样，每行业取前5只）
-    const industryChanges = new Map<string, { totalChange: number; count: number }>();
-    
-    for (const [industry, codes] of industryStocks.entries()) {
-      // 采样：最多取前10只计算（避免API调用过多）
-      const sampleCodes = codes.slice(0, 10);
-      let totalChange = 0;
-      let validCount = 0;
-      
-      for (const code of sampleCodes.slice(0, 5)) {
-        try {
-          // 获取20日前和当前的价格来计算涨幅
-          const klineResult = await tushareRequest<{
-            fields: string[];
-            items: (string | number | null)[][];
-          }>('daily', {
-            ts_code: code.startsWith('6') ? `${code}.SH` : `${code}.SZ`,
-            start_date: getDateString(-20),
-            end_date: getDateString(0),
-          }, 'trade_date,close');
-          
-          if (klineResult.success && klineResult.data && klineResult.data.items.length >= 2) {
-            const items = klineResult.data.items;
-            const firstClose = Number(items[0][1]);   // 20天前的收盘价
-            const lastClose = Number(items[items.length - 1][1]); // 最新的收盘价
-            
-            if (firstClose > 0 && lastClose > 0) {
-              const change = ((lastClose - firstClose) / firstClose) * 100;
-              totalChange += change;
-              validCount++;
-            }
-          }
-        } catch {
-          // 忽略单只股票错误
-        }
-        
-        // 短暂延迟避免限流
-        if (sampleCodes.indexOf(code) < 4 && sampleCodes.indexOf(code) >= 0) {
-          await new Promise(resolve => setTimeout(resolve, 50));
-        }
-      }
-      
-      if (validCount > 0) {
-        industryChanges.set(industry, {
-          totalChange: totalChange / validCount,
-          count: codes.length
-        });
-      } else {
-        industryChanges.set(industry, {
-          totalChange: 0,
-          count: codes.length
-        });
-      }
-    }
-
-    // Step 4: 计算RPS20（全市场行业排名）
-    const allIndustries = Array.from(industryChanges.entries())
-      .map(([name, data]) => ({
-        industry: name,
-        change20d: data.totalChange,
-        stockCount: data.count
-      }))
-      .sort((a, b) => b.change20d - a.change20d);
-
-    const totalIndustries = allIndustries.length;
-    const result: IndustryRPS[] = allIndustries.map((item, index) => ({
-      ...item,
-      rps20: totalIndustries > 1 ? Math.round((1 - index / (totalIndustries - 1)) * 100) : 100
-    }));
+    // 更新缓存
+    cachedIndustryRPS = result;
+    cacheTimestamp = now;
 
     return NextResponse.json({
       success: true,
       data: result,
       total: result.length,
-      timestamp: Date.now()
+      cached: false,
+      timestamp: now,
     });
 
   } catch (error) {
@@ -142,13 +191,8 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       success: false,
       error: error instanceof Error ? error.message : '服务器错误',
-      data: []
+      data: [],
+      timestamp: Date.now(),
     });
   }
-}
-
-function getDateString(daysOffset: number): string {
-  const date = new Date();
-  date.setDate(date.getDate() + daysOffset);
-  return date.toISOString().split('T')[0].replace(/-/g, '');
 }

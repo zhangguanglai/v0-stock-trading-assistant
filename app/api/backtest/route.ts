@@ -46,6 +46,7 @@ interface StrategyRules {
   minScore?: number;
   maxIndexDrawdown?: number;
   useKellySizing?: boolean;
+  minSectorRPS?: number;
 }
 
 interface Position {
@@ -106,6 +107,10 @@ export interface BacktestDataCache {
   indexAboveMA20: Map<string, boolean>;
   // 沪深300指数收益率: date -> returnPercent
   indexReturn: Map<string, number>;
+  // 股票行业映射: code -> industry
+  industryMap: Map<string, string>;
+  // 行业RPS by date: date -> industry -> rps20 (0-100)
+  industryRPSByDate: Map<string, Map<string, number>>;
 }
 
 // 预加载整个回测期间的数据到内存
@@ -300,7 +305,69 @@ export async function preloadBacktestData(startDate: string, endDate: string): P
     }
   }
 
-  return { tradeDates, marketDataByDate, indicatorsByCode, priceHistory, indexAboveMA20, indexReturn };
+  // 7. 加载行业映射（从Tushare stock_basic）
+  let industryMap = new Map<string, string>();
+  try {
+    const { tushareRequest } = await import('@/lib/stock-api');
+    const result = await tushareRequest<{
+      fields: string[];
+      items: (string | number)[][];
+    }>('stock_basic', { list_status: 'L' }, 'ts_code,symbol,name,industry');
+
+    if (result.success && result.data) {
+      const fields = result.data.fields || [];
+      const tsIdx = fields.indexOf('ts_code');
+      const industryIdx = fields.indexOf('industry');
+      for (const item of result.data.items) {
+        const tsCode = String(item[tsIdx]);
+        const code = tsCode.split('.')[0];
+        const industry = String(item[industryIdx] || '未知');
+        if (industry !== '未知') industryMap.set(code, industry);
+      }
+    }
+  } catch (e) {
+    console.error('[Backtest] 加载行业映射失败:', e);
+  }
+
+  // 8. 计算每个交易日各行业RPS（基于return20D）
+  const industryRPSByDate = new Map<string, Map<string, number>>();
+  for (const date of tradeDates) {
+    const dayData = marketDataByDate.get(date);
+    if (!dayData) continue;
+
+    // 按行业分组收集return20D
+    const industryReturns = new Map<string, number[]>();
+    for (const [code, data] of dayData.entries()) {
+      const industry = industryMap.get(code);
+      if (!industry) continue;
+      const indicators = indicatorsByCode.get(code)?.get(date);
+      if (!indicators) continue;
+
+      const arr = industryReturns.get(industry) || [];
+      arr.push(indicators.return20D);
+      industryReturns.set(industry, arr);
+    }
+
+    // 计算各行业平均20日涨幅并排序
+    const industries = Array.from(industryReturns.entries())
+      .map(([name, returns]) => ({
+        industry: name,
+        avgReturn: returns.reduce((a, b) => a + b, 0) / returns.length,
+      }))
+      .sort((a, b) => b.avgReturn - a.avgReturn);
+
+    const total = industries.length;
+    const rpsMap = new Map<string, number>();
+    if (total > 0) {
+      for (let i = 0; i < total; i++) {
+        const rps = total > 1 ? Math.round((1 - i / (total - 1)) * 100) : 100;
+        rpsMap.set(industries[i].industry, rps);
+      }
+    }
+    industryRPSByDate.set(date, rpsMap);
+  }
+
+  return { tradeDates, marketDataByDate, indicatorsByCode, priceHistory, indexAboveMA20, indexReturn, industryMap, industryRPSByDate };
 }
 
 // ============ 技术指标计算 ============
@@ -497,7 +564,19 @@ export async function runBacktestWithCache(
         const passMarketCap = (!rules.minMarketCap || (data.marketCap || 0) >= rules.minMarketCap) &&
                               (!rules.maxMarketCap || (data.marketCap || 0) <= rules.maxMarketCap);
 
-        if (!passMA5 || !passMA20 || !passMA60 || !passMACD || !passTurnover || !passVolumeRatio || !passMarketCap) {
+        // 行业RPS硬过滤
+        let passSectorRPS = true;
+        if (rules.minSectorRPS && rules.minSectorRPS > 0) {
+          const stockIndustry = cache.industryMap.get(data.code);
+          if (stockIndustry) {
+            const industryRPS = cache.industryRPSByDate.get(date)?.get(stockIndustry);
+            if (industryRPS !== undefined) {
+              passSectorRPS = industryRPS >= rules.minSectorRPS;
+            }
+          }
+        }
+
+        if (!passMA5 || !passMA20 || !passMA60 || !passMACD || !passTurnover || !passVolumeRatio || !passMarketCap || !passSectorRPS) {
           passFilter = false;
         }
       }
@@ -562,6 +641,18 @@ export async function runBacktestWithCache(
 
       // 换手率适中
       if (data.turnoverRate && data.turnoverRate > 3 && data.turnoverRate < 15) score += 5;
+
+      // 行业RPS动量加分
+      const stockIndustry = cache.industryMap.get(data.code);
+      if (stockIndustry) {
+        const industryRPS = cache.industryRPSByDate.get(date)?.get(stockIndustry);
+        if (industryRPS !== undefined) {
+          if (industryRPS >= 90) score += 12;
+          else if (industryRPS >= 80) score += 8;
+          else if (industryRPS >= 60) score += 4;
+          else if (industryRPS < 40) score -= 8;
+        }
+      }
 
       score = Math.max(0, Math.min(100, score));
 

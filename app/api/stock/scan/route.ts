@@ -289,92 +289,26 @@ async function getIndustryMap(codes: string[]): Promise<Map<string, string>> {
   return industryMap;
 }
 
-// 获取板块涨幅映射（用于minSectorGain过滤）
-// 返回：股票代码 -> 其所属概念板块中涨幅最高的那个板块的涨跌幅
-// 核心逻辑：按股票代码反向查询所属概念 + 与当日板块行情匹配
-// 优化：使用batchGetStockConcepts带缓存，按交易日失效
-async function getSectorGainMap(
-  codes: string[],
-  minSectorGain: number
-): Promise<Map<string, { sectorCode: string; sectorName: string; gain: number }>> {
-  const sectorGainMap = new Map<string, { sectorCode: string; sectorName: string; gain: number }>();
-  
-  if (!isTushareConfigured() || codes.length === 0) return sectorGainMap;
-  
+// 获取行业RPS映射（统一使用申万行业RPS20）
+// 从 /api/stock/industry-rps 获取全市场行业RPS数据
+async function getIndustryRPSMap(): Promise<Map<string, number>> {
+  const map = new Map<string, number>();
+
   try {
-    // 1. 获取全量概念板块当日行情（缓存1天，每日仅1次API调用）
-    const dailyResult = await getConceptDaily();
-    if (!dailyResult.success || !dailyResult.data || dailyResult.data.length === 0) {
-      console.log('[SectorGain] 概念板块日行情数据为空');
-      return sectorGainMap;
-    }
-    
-    // 构建板块代码->涨跌幅映射
-    const sectorPctMap = new Map<string, number>();
-    dailyResult.data.forEach(d => {
-      // 保留所有板块（包括涨跌幅为0的），零值是有效的板块涨幅，用于与minSectorGain比较
-      sectorPctMap.set(d.tsCode, d.pctChange);
-    });
-    console.log(`[SectorGain] 获取到${sectorPctMap.size}个概念板块当日涨跌幅`);
-    
-    // 2. 获取全量概念板块列表（用于板块名称映射）
-    const indexResult = await getConceptIndices('N');
-    const sectorNameMap = new Map<string, string>();
-    if (indexResult.success && indexResult.data) {
-      indexResult.data.forEach(idx => {
-        sectorNameMap.set(idx.tsCode, idx.name);
-      });
-    }
-    
-    // 3. 按股票代码反向查询所属概念（带缓存，分批限流）
-    const uniqueCodes = [...new Set(codes)];
-    console.log(`[SectorGain] 开始查询${uniqueCodes.length}只股票的所属概念...`);
-    
-    // 将候选股票转换为Tushare格式 (000001.SZ)
-    const tsCodes = uniqueCodes.map(code => {
-      const cleanCode = code.replace(/^(sh|sz|bj)/i, '');
-      const market = code.startsWith('6') || code.startsWith('9') ? 'SH' : 'SZ';
-      return `${cleanCode}.${market}`;
-    });
-    
-    // 批量获取股票所属概念（内部带缓存）
-    const { batchGetStockConcepts } = await import('@/lib/stock-api/tushare-api');
-    const stockConceptsMap = await batchGetStockConcepts(tsCodes, 10, 200);
-    console.log(`[SectorGain] 成功获取${stockConceptsMap.size}只股票的概念归属`);
-    
-    // 4. 匹配候选股票与板块涨幅
-    for (let i = 0; i < uniqueCodes.length; i++) {
-      const code = uniqueCodes[i];
-      const tsCode = tsCodes[i];
-      const concepts = stockConceptsMap.get(tsCode);
-      
-      if (!concepts || concepts.length === 0) continue;
-      
-      // 找出该股票所属概念中涨幅最高的
-      let maxGain = -Infinity;
-      let bestSector = '';
-      let bestSectorName = '';
-      
-      for (const concept of concepts) {
-        const gain = sectorPctMap.get(concept.tsCode);
-        if (gain !== undefined && gain > maxGain) {
-          maxGain = gain;
-          bestSector = concept.tsCode;
-          bestSectorName = concept.tsName;
-        }
+    const response = await fetch('http://localhost:3000/api/stock/industry-rps');
+    const result = await response.json();
+
+    if (result.success && result.data) {
+      for (const item of result.data) {
+        map.set(item.industry, item.rps20);
       }
-      
-      if (bestSector) {
-        sectorGainMap.set(code, { sectorCode: bestSector, sectorName: bestSectorName, gain: maxGain });
-      }
+      console.log(`[IndustryRPS] 获取到${map.size}个行业RPS数据`);
     }
-    
-    console.log(`[SectorGain] 板块涨幅映射构建完成: ${sectorGainMap.size}/${uniqueCodes.length} 只股票`);
   } catch (e) {
-    console.error('[SectorGain] 获取板块涨幅映射失败:', e);
+    console.error('[IndustryRPS] 获取行业RPS失败:', e);
   }
-  
-  return sectorGainMap;
+
+  return map;
 }
 
 // 检测买入信号（获取K线并分析）- 并行获取
@@ -674,10 +608,8 @@ export async function GET(request: NextRequest) {
     // 2.5 获取行业信息
     const industryMap = await getIndustryMap(candidateCodes);
     
-    // 2.6 获取板块涨幅映射（当设置了minSectorGain时）
-    const sectorGainMap = rules.minSectorGain && rules.minSectorGain > 0
-      ? await getSectorGainMap(candidateCodes, rules.minSectorGain)
-      : new Map<string, { sectorCode: string; sectorName: string; gain: number }>();
+    // 2.6 获取行业RPS映射（统一使用申万行业RPS替代概念板块）
+    const industryRPSMap = await getIndustryRPSMap();
     
     // 步骤3: 获取财务指标（非过滤步骤，仅记录数据覆盖情况）
     const financeMap = await getFinanceMap(candidateCodes);
@@ -840,11 +772,13 @@ export async function GET(request: NextRequest) {
         const basicData = basicDataMap.get(code);
         const finance = financeMap.get(code);
         const techData = technicalDataMap.get(code);
-        const sectorData = sectorGainMap.get(code);
-        
         // 确定价格来源
         const priceSource: 'realtime' | 'close' = (useClosePrice && closePriceMap.has(code)) ? 'close' : 'realtime';
-        
+
+        // 构建行业RPS数据（统一使用申万行业）
+        const industryName = industryMap.get(code) || '未知';
+        const rps20 = industryRPSMap.get(industryName) ?? 50;
+
         // 构建过滤上下文
         const filterCtx: FilterContext = {
           code,
@@ -858,7 +792,7 @@ export async function GET(request: NextRequest) {
           basicData: basicData || null,
           finance: finance || null,
           technical: techData || null,
-          sector: sectorData || null,
+          sector: industryName !== '未知' ? { sectorName: industryName, rps20 } : null,
         };
         
         // 使用统一过滤引擎

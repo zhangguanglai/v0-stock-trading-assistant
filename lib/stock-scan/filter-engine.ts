@@ -29,16 +29,16 @@ export interface FilterContext {
     ma60?: number;
     weeklyMACDGoldenCross?: boolean;
     // 均值回归指标
-    rsi?: number;                    // RSI相对强弱指标
-    bollingerLower?: number;         // 布林带下轨
-    bollingerUpper?: number;         // 布林带上轨
-    bollingerMid?: number;           // 布林带中轨
-    consecutiveDecline?: number;     // 连续下跌天数
+    rsi?: number;
+    bollingerLower?: number;
+    bollingerUpper?: number;
+    bollingerMid?: number;
+    consecutiveDecline?: number;
   } | null;
+  // 统一使用申万行业RPS（替代旧的概念板块gain）
   sector?: {
-    sectorCode: string;
     sectorName: string;
-    gain: number;
+    rps20: number;
   } | null;
 }
 
@@ -158,7 +158,6 @@ export function checkStockRules(
         pass: false,
         value: '无数据',
       });
-      // 不设置 meetsAllRules = false
     } else {
       const pass = ctx.finance.roe >= rules.minROE;
       ruleChecks.push({
@@ -178,7 +177,6 @@ export function checkStockRules(
         pass: false,
         value: '无数据',
       });
-      // 不设置 meetsAllRules = false
     } else {
       const pass = ctx.finance.debtRatio <= rules.maxDebtRatio;
       ruleChecks.push({
@@ -326,22 +324,23 @@ export function checkStockRules(
     }
   }
 
-  // ── 板块涨幅规则（硬过滤） ──
+  // ── 行业RPS规则（硬过滤 + 评分） ──
 
   if (rules.minSectorGain && rules.minSectorGain > 0) {
     if (!ctx.sector) {
-      // 无板块数据时不淘汰（与 funnel 阶段一致）
+      // 无行业数据时不淘汰（防御性处理）
       ruleChecks.push({
-        rule: `板块涨幅 ≥ ${rules.minSectorGain}%`,
+        rule: `行业RPS ≥ ${rules.minSectorGain}`,
         pass: false,
-        value: '无板块数据',
+        value: '无行业数据',
       });
     } else {
-      const pass = ctx.sector.gain >= rules.minSectorGain;
+      // 将 minSectorGain 解释为 RPS 阈值（兼容旧配置）
+      const pass = ctx.sector.rps20 >= rules.minSectorGain;
       ruleChecks.push({
-        rule: `板块涨幅 ≥ ${rules.minSectorGain}%`,
+        rule: `行业RPS ≥ ${rules.minSectorGain}`,
         pass,
-        value: `${ctx.sector.sectorName} ${ctx.sector.gain.toFixed(2)}%`,
+        value: `${ctx.sector.sectorName} RPS:${ctx.sector.rps20}`,
       });
       if (!pass) meetsAllRules = false;
     }
@@ -356,7 +355,7 @@ export function checkStockRules(
     // 均值回归策略评分：回调越深、超卖越严重，分数越高
     if (ctx.quote.changePercent < -3 && ctx.quote.changePercent > -8) score += 15;
     else if (ctx.quote.changePercent < -1 && ctx.quote.changePercent >= -3) score += 10;
-    else if (ctx.quote.changePercent >= 0) score -= 10; // 上涨的股票不适合均值回归
+    else if (ctx.quote.changePercent >= 0) score -= 10;
 
     // RSI超卖加分
     if (ctx.technical && ctx.technical.rsi !== undefined) {
@@ -407,6 +406,15 @@ export function checkStockRules(
   }
 
   if (ctx.basicData && ctx.basicData.volumeRatio > 2) score += 5;
+
+  // ── 行业RPS评分加成 ──
+  if (ctx.sector) {
+    const rps = ctx.sector.rps20;
+    if (rps >= 90) score += 15;
+    else if (rps >= 80) score += 10;
+    else if (rps >= 60) score += 5;
+    else if (rps < 40) score -= 10;
+  }
 
   return {
     meetsRules: meetsAllRules,
