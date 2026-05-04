@@ -326,19 +326,19 @@ export function checkStockRules(
 
   // ── 行业RPS规则（硬过滤 + 评分） ──
 
-  if (rules.minSectorGain && rules.minSectorGain > 0) {
+  const minSectorRPS = rules.minSectorRPS ?? rules.minSectorGain;
+  if (minSectorRPS && minSectorRPS > 0) {
     if (!ctx.sector) {
       // 无行业数据时不淘汰（防御性处理）
       ruleChecks.push({
-        rule: `行业RPS ≥ ${rules.minSectorGain}`,
+        rule: `行业RPS ≥ ${minSectorRPS}`,
         pass: false,
         value: '无行业数据',
       });
     } else {
-      // 将 minSectorGain 解释为 RPS 阈值（兼容旧配置）
-      const pass = ctx.sector.rps20 >= rules.minSectorGain;
+      const pass = ctx.sector.rps20 >= minSectorRPS;
       ruleChecks.push({
-        rule: `行业RPS ≥ ${rules.minSectorGain}`,
+        rule: `行业RPS ≥ ${minSectorRPS}`,
         pass,
         value: `${ctx.sector.sectorName} RPS:${ctx.sector.rps20}`,
       });

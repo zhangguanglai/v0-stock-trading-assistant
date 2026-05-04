@@ -108,82 +108,78 @@ async function get20DayChangesFromSQLite(): Promise<Map<string, number>> {
   }
 }
 
-// 从Tushare获取20日涨幅（降级方案）
+// 从Tushare获取1日涨幅作为降级方案（积分友好）
+// 注意：这是1日动量而非20日动量，用于SQLite不可用时降级
 async function get20DayChangesFromTushare(): Promise<Map<string, number>> {
   const { tushareRequest } = await import('@/lib/stock-api');
   const changes = new Map<string, number>();
 
-  // 1. 获取全市场股票列表
-  const stockResult = await tushareRequest<{
-    fields: string[];
-    items: (string | number)[][];
-  }>('stock_basic', { list_status: 'L' }, 'ts_code,symbol,name');
+  try {
+    // 方案：使用 trade_date 获取全市场单日行情（1次API调用）
+    // 获取最近1个交易日和20个交易日前的数据各1次
+    const today = new Date();
+    const date20dAgo = new Date(today);
+    date20dAgo.setDate(today.getDate() - 25); // 多取几天确保是交易日
 
-  if (!stockResult.success || !stockResult.data) {
-    return changes;
-  }
+    const endDateStr = today.toISOString().slice(0, 10).replace(/-/g, '');
+    const startDateStr = date20dAgo.toISOString().slice(0, 10).replace(/-/g, '');
 
-  const fields = stockResult.data.fields || [];
-  const tsIdx = fields.indexOf('ts_code');
-  const items = stockResult.data.items;
-
-  // 2. 计算20个交易日前日期
-  const today = new Date();
-  const startDate = new Date(today);
-  startDate.setDate(today.getDate() - 35); // 多取几天确保覆盖20个交易日
-  const startDateStr = startDate.toISOString().slice(0, 10).replace(/-/g, '');
-  const endDateStr = today.toISOString().slice(0, 10).replace(/-/g, '');
-
-  // 3. 批量获取日行情（Tushare daily接口支持多代码）
-  // 每次最多800只，分批次
-  const batchSize = 800;
-  for (let i = 0; i < items.length; i += batchSize) {
-    const batch = items.slice(i, i + batchSize);
-    const tsCodes = batch.map(item => String(item[tsIdx])).join(',');
-
+    // 获取最近1天全市场数据（不传ts_code获取全市场）
     const dailyResult = await tushareRequest<{
       fields: string[];
       items: (string | number)[][];
     }>('daily', {
-      ts_code: tsCodes,
       start_date: startDateStr,
       end_date: endDateStr,
     }, 'ts_code,trade_date,close,pct_chg');
 
-    if (!dailyResult.success || !dailyResult.data) continue;
+    if (!dailyResult.success || !dailyResult.data) {
+      console.log('[IndustryRPS] Tushare daily 返回空数据');
+      return changes;
+    }
 
     const dFields = dailyResult.data.fields || [];
     const codeIdx = dFields.indexOf('ts_code');
     const dateIdx = dFields.indexOf('trade_date');
     const closeIdx = dFields.indexOf('close');
 
-    // 按股票分组，取最早和最新
-    const stockPrices = new Map<string, { earliest: number; latest: number }>();
+    // 按股票分组，取最早和最新的收盘价
+    const stockPrices = new Map<string, { earliest: number; latest: number; earliestDate: string; latestDate: string }>();
     for (const item of dailyResult.data.items) {
       const tsCode = String(item[codeIdx]);
       const code = tsCode.split('.')[0];
       const close = Number(item[closeIdx]) || 0;
+      const date = String(item[dateIdx]);
       if (close <= 0) continue;
 
       const existing = stockPrices.get(code);
       if (!existing) {
-        stockPrices.set(code, { earliest: close, latest: close });
+        stockPrices.set(code, { earliest: close, latest: close, earliestDate: date, latestDate: date });
       } else {
-        // Tushare返回按日期降序，所以先遇到的是最新的
-        // 但这里简单处理：取第一个和最后一个
-        existing.latest = close;
+        // 更新最早和最新
+        if (date < existing.earliestDate) {
+          existing.earliest = close;
+          existing.earliestDate = date;
+        }
+        if (date > existing.latestDate) {
+          existing.latest = close;
+          existing.latestDate = date;
+        }
       }
     }
 
     for (const [code, prices] of stockPrices.entries()) {
-      if (prices.earliest > 0) {
+      if (prices.earliest > 0 && prices.latestDate !== prices.earliestDate) {
         const change = ((prices.latest - prices.earliest) / prices.earliest) * 100;
         changes.set(code, change);
       }
     }
+
+    console.log(`[IndustryRPS] Tushare降级: 获取到${changes.size}只股票20日涨幅（${dailyResult.data.items.length}条记录）`);
+  } catch (e) {
+    console.error('[IndustryRPS] Tushare降级计算失败:', e);
   }
 
-  console.log(`[IndustryRPS] Tushare降级: 获取到${changes.size}只股票20日涨幅`);
   return changes;
 }
 

@@ -849,7 +849,7 @@ const validateStockRules = useMemo(() => {
                 </Badge>
                 {activeStrategy.stockRules.minSectorGain && activeStrategy.stockRules.minSectorGain > 0 && (
                   <Badge variant="secondary">
-                    板块涨幅 &gt; {activeStrategy.stockRules.minSectorGain}%
+                    行业RPS &gt; {activeStrategy.stockRules.minSectorGain}
                   </Badge>
                 )}
               </div>

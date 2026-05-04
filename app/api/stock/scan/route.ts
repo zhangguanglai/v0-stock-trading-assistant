@@ -34,6 +34,8 @@ export interface StrategyRules {
   maxConsecutiveDecline?: number;
   // 策略类型
   strategyType?: 'trend' | 'mean-reversion' | 'value';
+  minSectorRPS?: number;
+  /** @deprecated 使用 minSectorRPS */
   minSectorGain?: number;
   // 买入信号规则（用于buySignal检测）
   buyMa5CrossMa20?: boolean;
@@ -451,6 +453,7 @@ export async function GET(request: NextRequest) {
       maxConsecutiveDecline: searchParams.get('maxConsecutiveDecline') ? Number(searchParams.get('maxConsecutiveDecline')) : undefined,
       // 策略类型
       strategyType: (searchParams.get('strategyType') as StrategyRules['strategyType']) || undefined,
+      minSectorRPS: searchParams.get('minSectorRPS') ? Number(searchParams.get('minSectorRPS')) : undefined,
       minSectorGain: searchParams.get('minSectorGain') ? Number(searchParams.get('minSectorGain')) : undefined,
       // 买入信号规则
       buyMa5CrossMa20: searchParams.get('buyMa5CrossMa20') === 'true',
@@ -638,7 +641,8 @@ export async function GET(request: NextRequest) {
     if (rules.maxDebtRatio !== undefined) selectionRules.push(`负债率≤${rules.maxDebtRatio}%`);
     if (rules.maxPEPercentile !== undefined) selectionRules.push(`PE分位≤${rules.maxPEPercentile}%`);
     if (rules.minTurnoverRate5D !== undefined) selectionRules.push(`5日换手率≥${rules.minTurnoverRate5D}%`);
-    if (rules.minSectorGain !== undefined) selectionRules.push(`板块涨幅≥${rules.minSectorGain}%`);
+    const minSectorRPS = rules.minSectorRPS ?? rules.minSectorGain;
+    if (minSectorRPS !== undefined) selectionRules.push(`行业RPS≥${minSectorRPS}`);
     
     // 构建买入规则描述（用于买入信号步骤）
     const buyRuleFilters: string[] = [];
@@ -910,14 +914,15 @@ export async function GET(request: NextRequest) {
       });
     }
     
+    const sectorRPSValue = rules.minSectorRPS ?? rules.minSectorGain;
     const hasCapitalRules = (rules.minTurnoverRate && rules.minTurnoverRate > 0) || 
       (rules.minVolumeRatio && rules.minVolumeRatio > 0) || 
-      (rules.minSectorGain && rules.minSectorGain > 0);
+      (sectorRPSValue && sectorRPSValue > 0);
     if (hasCapitalRules) {
       const capitalDetails: string[] = [];
       if (rules.minTurnoverRate && rules.minTurnoverRate > 0) capitalDetails.push(`换手率≥${rules.minTurnoverRate}%`);
       if (rules.minVolumeRatio && rules.minVolumeRatio > 0) capitalDetails.push(`量比≥${rules.minVolumeRatio}`);
-      if (rules.minSectorGain && rules.minSectorGain > 0) capitalDetails.push(`行业RPS≥${rules.minSectorGain}`);
+      if (sectorRPSValue && sectorRPSValue > 0) capitalDetails.push(`行业RPS≥${sectorRPSValue}`);
       
       funnelSteps.push({
         label: '资金面筛选',
@@ -1000,7 +1005,8 @@ function buildRuleDescriptions(rules: StrategyRules): string[] {
   if (rules.rsiOversold !== undefined && rules.rsiOversold > 0) descs.push(`RSI超卖 < ${rules.rsiOversold}`);
   if (rules.bollingerBelowLower) descs.push(`股价触及布林带下轨`);
   if (rules.maxConsecutiveDecline !== undefined && rules.maxConsecutiveDecline > 0) descs.push(`连续下跌 ≥ ${rules.maxConsecutiveDecline}天`);
-  if (rules.minSectorGain) descs.push(`板块涨幅 ≥ ${rules.minSectorGain}%`);
+  const minSectorRPS = rules.minSectorRPS ?? rules.minSectorGain;
+  if (minSectorRPS) descs.push(`行业RPS ≥ ${minSectorRPS}`);
   return descs;
 }
 

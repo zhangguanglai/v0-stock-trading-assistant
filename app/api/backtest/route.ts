@@ -34,6 +34,7 @@ interface StrategyRules {
   priceAboveMA5?: boolean;
   priceAboveMA20?: boolean;
   weeklyMACDGoldenCross?: boolean;
+  /** @deprecated 使用 minSectorRPS */
   minSectorGain?: number;
   stopLossPercent?: number;
   takeProfitPercent?: number;
@@ -566,12 +567,13 @@ export async function runBacktestWithCache(
 
         // 行业RPS硬过滤
         let passSectorRPS = true;
-        if (rules.minSectorRPS && rules.minSectorRPS > 0) {
+        const minSectorRPS = rules.minSectorRPS ?? rules.minSectorGain;
+        if (minSectorRPS && minSectorRPS > 0) {
           const stockIndustry = cache.industryMap.get(data.code);
           if (stockIndustry) {
             const industryRPS = cache.industryRPSByDate.get(date)?.get(stockIndustry);
             if (industryRPS !== undefined) {
-              passSectorRPS = industryRPS >= rules.minSectorRPS;
+              passSectorRPS = industryRPS >= minSectorRPS;
             }
           }
         }

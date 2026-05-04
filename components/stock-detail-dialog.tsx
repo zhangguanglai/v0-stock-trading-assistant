@@ -737,12 +737,12 @@ export function StockDetailDialog({
                           }
                         }
                         
-                        // 板块涨幅（仅当策略设置了板块涨幅条件时显示）
+                        // 行业RPS（仅当策略设置了行业RPS条件时显示）
                         if (rules.minSectorGain && rules.minSectorGain > 0) {
-                          // 详情页无法获取实时板块数据，显示提示
+                          // 详情页无法获取实时行业数据，显示提示
                           violations.push({
-                            rule: `板块涨幅 ≥ ${rules.minSectorGain}%`,
-                            expected: `≥ ${rules.minSectorGain}%`,
+                            rule: `行业RPS ≥ ${rules.minSectorGain}`,
+                            expected: `≥ ${rules.minSectorGain}`,
                             actual: '选股扫描时已过滤',
                             pass: true,
                           });
