@@ -43,6 +43,9 @@ interface StrategyRules {
   maxPositions?: number;
   maxSingleStockPercent?: number;
   minCashPercent?: number;
+  minScore?: number;
+  maxIndexDrawdown?: number;
+  useKellySizing?: boolean;
 }
 
 interface Position {
@@ -99,6 +102,10 @@ export interface BacktestDataCache {
   indicatorsByCode: Map<string, Map<string, PrecomputedIndicators>>;
   // code -> sorted prices array for MACD calc
   priceHistory: Map<string, { date: string; close: number }[]>;
+  // 沪深300指数信号: date -> aboveMA20
+  indexAboveMA20: Map<string, boolean>;
+  // 沪深300指数收益率: date -> returnPercent
+  indexReturn: Map<string, number>;
 }
 
 // 预加载整个回测期间的数据到内存
@@ -272,7 +279,28 @@ export async function preloadBacktestData(startDate: string, endDate: string): P
   const totalMs = performance.now() - klineStart;
   console.log(`[Backtest] 数据预加载完成: ${tradeDates.length}个交易日, ${klineRows.length}条K线, ${basicRows.length}条基本面, 耗时${totalMs.toFixed(0)}ms`);
 
-  return { tradeDates, marketDataByDate, indicatorsByCode, priceHistory };
+  // 6. 计算沪深300指数信号
+  const indexAboveMA20 = new Map<string, boolean>();
+  const indexReturn = new Map<string, number>();
+  const indexPrices: number[] = [];
+
+  for (const date of tradeDates) {
+    const dayData = marketDataByDate.get(date);
+    const indexData = dayData?.get('000300');
+    if (indexData && indexData.close > 0) {
+      indexPrices.push(indexData.close);
+      const ma20 = indexPrices.length >= 20
+        ? indexPrices.slice(-20).reduce((a, b) => a + b, 0) / 20
+        : indexPrices.reduce((a, b) => a + b, 0) / indexPrices.length;
+      indexAboveMA20.set(date, indexData.close > ma20);
+      indexReturn.set(date, indexData.changePercent || 0);
+    } else {
+      indexAboveMA20.set(date, true);
+      indexReturn.set(date, 0);
+    }
+  }
+
+  return { tradeDates, marketDataByDate, indicatorsByCode, priceHistory, indexAboveMA20, indexReturn };
 }
 
 // ============ 技术指标计算 ============
@@ -541,10 +569,32 @@ export async function runBacktestWithCache(
     }
 
     // 3. 买入
-    const maxPositions = rules.maxPositions ?? 5;
+    let maxPositions = rules.maxPositions ?? 5;
+
+    // 指数均线过滤：沪深300在MA20下方时，降低仓位上限
+    const useIndexFilter = rules.maxIndexDrawdown !== undefined && rules.maxIndexDrawdown !== null;
+    if (useIndexFilter) {
+      const indexAbove = cache.indexAboveMA20.get(date) ?? true;
+      if (!indexAbove) {
+        maxPositions = Math.min(maxPositions, 2);
+      }
+    }
+
     const maxSingleStockPercent = rules.maxSingleStockPercent ?? 20;
     const minCashPercent = rules.minCashPercent ?? 10;
     const availableSlots = maxPositions - positions.length;
+
+    // 最低评分过滤
+    const minScore = rules.minScore ?? 0;
+    if (minScore > 0) {
+      const filtered = candidates.filter(c => c.score >= minScore);
+      if (filtered.length === 0) {
+        candidates.length = 0;
+      } else {
+        candidates.length = 0;
+        candidates.push(...filtered);
+      }
+    }
 
     if (availableSlots > 0 && candidates.length > 0) {
       candidates.sort((a, b) => b.score - a.score);
@@ -558,9 +608,26 @@ export async function runBacktestWithCache(
       const minCash = totalEquity * (minCashPercent / 100);
       const availableCash = Math.max(0, cash - minCash);
 
+      // 凯利仓位优化
+      const useKelly = rules.useKellySizing === true;
+      let kellyFraction = 1.0;
+      if (useKelly && trades.length >= 10) {
+        const wins = trades.filter(t => t.profit > 0);
+        const losses = trades.filter(t => t.profit < 0);
+        if (wins.length > 0 && losses.length > 0) {
+          const avgWin = wins.reduce((s, t) => s + t.profitPercent, 0) / wins.length;
+          const avgLoss = Math.abs(losses.reduce((s, t) => s + t.profitPercent, 0) / losses.length);
+          const winRate = wins.length / (wins.length + losses.length);
+          if (avgLoss > 0) {
+            const rawKelly = winRate - (1 - winRate) / (avgWin / avgLoss);
+            kellyFraction = Math.max(0.5, Math.min(1.0, rawKelly));
+          }
+        }
+      }
+
       for (const { data: stock } of selected) {
         const buyPrice = stock.close * (1 + slippage);
-        const maxBuyAmount = Math.min(maxPositionValue, availableCash / availableSlots);
+        const maxBuyAmount = Math.min(maxPositionValue, availableCash / availableSlots) * kellyFraction;
         const shares = Math.floor(maxBuyAmount / buyPrice / 100) * 100;
         if (shares < 100) continue;
 
