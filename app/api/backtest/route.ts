@@ -327,7 +327,7 @@ export async function runBacktest(
   params: BacktestParams,
   rules: StrategyRules
 ): Promise<BacktestResult> {
-  const cache = preloadBacktestData(params.startDate, params.endDate);
+  const cache = await preloadBacktestData(params.startDate, params.endDate);
   return runBacktestWithCache(params, rules, cache);
 }
 
@@ -339,6 +339,9 @@ export async function runBacktestWithCache(
   const startTime = performance.now();
 
   const { tradeDates, marketDataByDate, indicatorsByCode } = cache;
+
+  const commissionRate = params.commissionRate ?? 0.0003;
+  const slippage = params.slippage ?? 0.001;
 
   if (tradeDates.length === 0) {
     throw new Error('回测时间范围无效，数据库中无数据');
@@ -392,10 +395,9 @@ export async function runBacktestWithCache(
       const timeStopTriggered = holdingDays >= timeStopDays && currentGainPercent < timeStopMinGain;
 
       if (stopLossTriggered || takeProfitTriggered || trailingStopTriggered || timeStopTriggered) {
-        const slippage = params.slippage || 0;
         const sellPrice = currentPrice * (1 - slippage);
         const sellAmount = sellPrice * pos.shares;
-        const commission = sellAmount * params.commissionRate;
+        const commission = sellAmount * commissionRate;
         cash += sellAmount - commission;
 
         const profit = (sellPrice - pos.entryPrice) * pos.shares - commission;
@@ -557,14 +559,13 @@ export async function runBacktestWithCache(
       const availableCash = Math.max(0, cash - minCash);
 
       for (const { data: stock } of selected) {
-        const slippage = params.slippage || 0;
         const buyPrice = stock.close * (1 + slippage);
         const maxBuyAmount = Math.min(maxPositionValue, availableCash / availableSlots);
         const shares = Math.floor(maxBuyAmount / buyPrice / 100) * 100;
         if (shares < 100) continue;
 
         const buyAmount = buyPrice * shares;
-        const commission = buyAmount * params.commissionRate;
+        const commission = buyAmount * commissionRate;
 
         if (cash < buyAmount + commission) continue;
 
